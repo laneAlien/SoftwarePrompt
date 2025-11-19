@@ -1,0 +1,123 @@
+ЦЕЛЬ:
+Определить интерфейс LlmClient и основные промпты.
+
+ДИРЕКТОРИЯ:
+  /src/llm
+
+ФАЙЛЫ:
+- llmClient.ts
+- prompts.ts
+
+1) Интерфейсы (частично описаны в core/types.ts)
+
+export type LlmMode = 'pair' | 'position' | 'portfolio' | 'news' | 'simulation';
+
+export interface LlmAnalysisInput {
+  symbol?: string;
+  timeframe?: string;
+  candles?: Candle[];
+  indicators?: IndicatorSet;
+  strategySignal?: CombinedSignal;
+  positions?: Position[];
+  portfolioSummary?: PortfolioSummary;
+  news?: NewsItem[];
+  riskSnapshot?: RiskSnapshot;
+}
+
+export interface LlmAnalysisOutput {
+  summary: string;
+  risks: string[];
+  scenarios: {
+    conservative: string;
+    moderate: string;
+    aggressive: string;
+  };
+  disclaimer: string;
+}
+
+export interface LlmClient {
+  analyze(input: LlmAnalysisInput, mode: LlmMode): Promise<LlmAnalysisOutput>;
+}
+
+2) Реализация llmClient.ts
+
+- Должна использовать ENV-переменные:
+  - LLM_API_URL
+  - LLM_API_KEY
+  - LLM_MODEL (опционально)
+- Внутри:
+  - Собираем payload: { mode, input, systemPrompt, userPrompt }
+  - Делаем HTTP POST на LLM_API_URL
+  - Парсим ответ в структуру LlmAnalysisOutput
+
+Если реальное LLM API не указано:
+- Можно делать заглушку, которая возвращает заранее заготовленный текст.
+
+3) prompts.ts
+
+Определяем system prompts (строки) и функцию генерации user prompt.
+
+Пример system prompt (общий):
+
+export const BASE_SYSTEM_PROMPT = `
+Ты — аналитик финансовых рисков и поведения рынка криптовалют.
+Ты НЕ даёшь прямых торговых команд (не говоришь "купи", "продай", "зашорть").
+Ты оцениваешь ситуацию, описываешь риски и возможные сценарии.
+Финальное решение всегда остаётся за пользователем.
+Всегда предупреждай о рисках плеча, ликвидации и высокой волатильности.
+`;
+
+Дополнительно — подсистемные:
+
+- PAIR_ANALYSIS_SYSTEM_PROMPT
+- POSITION_ANALYSIS_SYSTEM_PROMPT
+- PORTFOLIO_ANALYSIS_SYSTEM_PROMPT
+- NEWS_ANALYSIS_SYSTEM_PROMPT
+- SIMULATION_ANALYSIS_SYSTEM_PROMPT
+
+Например:
+
+export const PAIR_ANALYSIS_SYSTEM_PROMPT = `
+Ты анализируешь одну торговую пару на конкретном таймфрейме.
+Тебе даются индикаторы (RSI, MACD, EMA, Bollinger Bands) и часть истории.
+Ты должен:
+- охарактеризовать текущий тренд (бычий, медвежий, боковик, неопределённость),
+- оценить состояние перекупленности/перепроданности,
+- указать зоны повышенного риска,
+- описать, что может случиться при резких движениях цены.
+Не давай прямых команд "купить/продать".
+`;
+
+User prompt может генерироваться на основе LlmAnalysisInput:
+
+export function buildUserPromptForMode(
+  input: LlmAnalysisInput,
+  mode: LlmMode
+): string {
+  // сериализуем ключевые поля в читаемый формат:
+  // - символ, таймфрейм
+  // - последние цены
+  // - значения индикаторов
+  // - краткая инфа о риске (distanceToLiq, riskLevel)
+  // - кратко о портфеле/новостях для соответствующих режимов
+}
+
+Пример формата:
+
+"Символ: TONUSDT
+Таймфрейм: 15m
+Текущая цена: 2.35
+RSI: 68
+MACD: ..., ...
+Уровень риска плеча: high (distanceToLiq: 3.1%)
+Кратко опиши текущую ситуацию и риски, предложи консервативный, умеренный и агрессивный сценарии поведения трейдера (без прямых приказов)."
+
+4) Ограничения:
+
+- LLM НИКОГДА не должен выдавать прямое: "купить сейчас", "продать сейчас", "зашортить обязательно".
+- LLM должен всегда включать:
+  - summary — общий обзор;
+  - risks — список рисков;
+  - scenarios — 3 сценария (консервативный/умеренный/агрессивный), без прямых команд, в виде описаний.
+  - disclaimer — явное напоминание, что это не рекомендация, а аналитика.
+

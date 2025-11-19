@@ -1,0 +1,174 @@
+ЦЕЛЬ:
+Определить архитектуру симулятора рынка и ИИ-трейдера (TradeBot).
+
+ДИРЕКТОРИЯ:
+  /src/simulation
+
+ФАЙЛЫ:
+- candleGenerator.ts
+- marketSimulator.ts
+- orderExecution.ts
+- tradeBot.ts
+- reporter.ts
+
+1) candleGenerator.ts
+
+Цель: сгенерировать искусственные свечи.
+
+export interface SimulationParams {
+  initialPrice: number;
+  candlesCount: number;
+  timeframe: string;   // "1m", "5m", "15m", etc.
+  volatility: number;  // условная волатильность, например 0.01
+  trendStrength: number; // 0..1
+  shockProbability: number; // вероятность резких движений (0..1)
+}
+
+export function generateCandles(params: SimulationParams): Candle[];
+
+Примерная логика:
+- Цена на шаге i = предыдущая цена + случайное изменение.
+- Случайное изменение = трендовая компонента + шум.
+- Шок (dump/pump) с вероятностью shockProbability.
+
+2) marketSimulator.ts
+
+Класс: MarketSimulator
+
+export class MarketSimulator {
+  private candles: Candle[];
+  private index: number;
+  private symbol: string;
+  private timeframe: string;
+
+  constructor(symbol: string, timeframe: string, candles: Candle[]) { ... }
+
+  hasNext(): boolean;
+  next(): MarketState;     // возвращает текущую цену + окно последних свечей
+  getHistory(windowSize: number): Candle[]; // последние N свечей
+}
+
+3) orderExecution.ts
+
+Цель: обработка сделок в симуляции, учёт баланса, PnL, ликвидация.
+
+export interface SimulatedPosition {
+  side: 'long' | 'short';
+  entryPrice: number;
+  size: number;
+  leverage: number;
+  mmr: number;              // maintenance margin rate
+  initialMargin: number;
+  isLiquidated: boolean;
+  liquidationPrice?: number;
+}
+
+export class OrderExecutionEngine {
+  private balanceUsd: number;
+  private positions: SimulatedPosition[];
+
+  constructor(initialBalanceUsd: number);
+
+  openPosition(
+    side: 'long' | 'short',
+    price: number,
+    size: number,
+    leverage: number,
+    mmr: number
+  ): void;
+
+  closePosition(index: number, price: number): void;
+
+  onPriceUpdate(price: number): void;  // пересчёт PnL, проверка ликвидаций
+
+  getBalance(): number;
+
+  getPositions(): SimulatedPosition[];
+}
+
+NOTES:
+- Для ликвидации используй математику из 06_risk_math.txt.
+- Для упрощения — изолированная маржа.
+
+4) tradeBot.ts
+
+Здесь реализуется многослойный ИИ-трейдер.
+
+Слои (логически, могут быть оформлены как методы или вспомогательные классы):
+- MarketLayer: получение MarketState
+- IndicatorLayer: computeIndicators
+- StrategyLayer: runAllStrategies + combineSignals
+- RiskLayer: оценка риска (через функции из liquidationRisk)
+- LLMLayer: запрос к LlmClient (mode 'simulation')
+- DecisionLayer: принятие решения (open/close/hold)
+
+Интерфейсы:
+
+export interface TradeBotConfig {
+  symbol: string;
+  timeframe: string;
+  initialBalanceUsd: number;
+  maxLeverage: number;
+  mmr: number;                 // maintenance margin rate
+  historyWindow: number;       // сколько свечей использовать для индикаторов
+}
+
+export interface SimulationTradeDecision {
+  action: 'open-long' | 'open-short' | 'close' | 'hold';
+  sizeFraction?: number;       // доля от баланса (0..1), если открываем
+  leverage?: number;           // плечо
+  reason: string;
+}
+
+export interface SimulationReport {
+  finalBalance: number;
+  initialBalance: number;
+  tradesCount: number;
+  liquidationsCount: number;
+  maxDrawdownPercent: number;
+  log: string[];               // текстовый лог
+}
+
+export class TradeBot {
+  constructor(
+    config: TradeBotConfig,
+    simulator: MarketSimulator,
+    execution: OrderExecutionEngine,
+    llmClient?: LlmClient       // опционально
+  ) { ... }
+
+  runSimulation(): Promise<SimulationReport>;
+}
+
+Внутри runSimulation():
+- Пока simulator.hasNext():
+  - получить MarketState
+  - вычислить Indicators
+  - собрать StrategyContext и запустить стратегии
+  - агрегировать StrategySignal → CombinedSignal
+  - оценить RiskSnapshot
+  - опционально вызвать LlmClient.analyze(mode='simulation')
+  - через DecisionLayer определить SimulationTradeDecision
+  - применить решение в OrderExecutionEngine
+  - обновить статистику для отчёта
+
+DecisionLayer пример логики:
+- Если riskLevel == 'extreme' и есть позиция → закрыть.
+- Если позиции нет:
+  - scoreBuy >> scoreSell → open-long
+  - scoreSell >> scoreBuy → open-short
+  - иначе → hold
+- Размер позиции (sizeFraction) может быть простым:
+  - 0.1, 0.2 и т.п. от баланса.
+
+5) reporter.ts
+
+Цель: собрать и оформить результаты симуляции.
+
+Функции:
+- buildSimulationReport(...): SimulationReport
+- formatSimulationReport(report: SimulationReport): string  // красивый текст
+- возможно, экспорт CSV/JSON с историей сделок.
+
+ВСЁ ЭТО ДОЛЖНО БЫТЬ РЕАЛИЗОВАНО С УЧЁТОМ ТИПОВ И МАТЕМАТИКИ ИЗ ДРУГИХ ФАЙЛОВ.
+

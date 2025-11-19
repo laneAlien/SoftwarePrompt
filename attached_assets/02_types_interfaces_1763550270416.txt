@@ -1,0 +1,224 @@
+ЦЕЛЬ:
+Определить все ключевые типы и интерфейсы, которые будут использоваться во всех модулях.
+
+ФАЙЛ: /src/core/types.ts
+
+ОСНОВНЫЕ ТИПЫ:
+
+1) Свечи и рынки
+
+export interface Candle {
+  timestamp: number;   // ms since epoch
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  timeframe: string;   // "1m", "5m", "15m", "1h", "4h", "1d", "1w", "1M"
+  symbol?: string;     // "TONUSDT" и т.п.
+}
+
+export interface MarketState {
+  currentPrice: number;
+  recentCandles: Candle[];
+  symbol: string;
+  timeframe: string;
+}
+
+2) Позиции и ордера
+
+export type PositionSide = 'long' | 'short';
+
+export interface Position {
+  symbol: string;
+  side: PositionSide;
+  entryPrice: number;
+  size: number;             // количество монет
+  leverage: number;
+  unrealizedPnl?: number;
+  margin: number;           // используемая маржа в USDT
+  liquidationPrice?: number;
+  exchange: string;         // "kucoin", "gate" или др.
+}
+
+export type OrderSide = 'buy' | 'sell';
+
+export type OrderType = 'market' | 'limit';
+
+export interface Order {
+  id: string;
+  symbol: string;
+  side: OrderSide;
+  type: OrderType;
+  price?: number;           // для limit; для market можно опустить
+  size: number;
+  timestamp: number;
+}
+
+3) Портфель
+
+export type AssetType = 'spot' | 'futures' | 'margin' | 'staking';
+
+export interface PortfolioAsset {
+  symbol: string;
+  amount: number;
+  valueUsd?: number;
+  type: AssetType;
+  exchange?: string;
+}
+
+export interface ConcentrationMetrics {
+  top1WeightPercent: number;
+  top3WeightPercent: number;
+  stablecoinsPercent: number;
+  highRiskPercent: number;
+}
+
+export interface PortfolioSummary {
+  totalValueUsd: number;
+  assets: PortfolioAsset[];
+  stablecoinsValueUsd: number;
+  highRiskValueUsd: number;
+  concentration: ConcentrationMetrics;
+}
+
+4) Новости, сигналы, промо, ваучеры
+
+export type NewsType = 'news' | 'signal' | 'promo' | 'voucher' | 'onchain';
+
+export type NewsSentiment = 'bullish' | 'bearish' | 'neutral' | 'mixed';
+
+export interface NewsItem {
+  id: string;
+  symbol?: string;
+  source: string;
+  type: NewsType;
+  sentiment: NewsSentiment;
+  timestamp: number;
+  title: string;
+  summary: string;
+  rawLink?: string;
+}
+
+5) Индикаторы
+
+(подробно в 03_indicators.txt, но тут общий тип)
+
+export interface MacdValue {
+  macd: number;
+  signal: number;
+  histogram: number;
+}
+
+export interface BollingerBands {
+  upper: number;
+  middle: number;
+  lower: number;
+}
+
+export interface IndicatorSet {
+  rsi?: number;
+  macd?: MacdValue;
+  emaFast?: number;
+  emaSlow?: number;
+  sma?: number;
+  bollinger?: BollingerBands;
+  // можешь добавлять новые поля в будущем
+}
+
+6) Стратегии
+
+(подробно в 04_strategies.txt)
+
+export type StrategySignalStrength = 'weak' | 'medium' | 'strong';
+
+export type StrategyActionType = 'buy' | 'sell' | 'hold';
+
+export interface StrategySignal {
+  strategyName: string;
+  action: StrategyActionType;
+  strength: StrategySignalStrength;
+  confidence: number; // 0..1
+  reason: string;
+}
+
+export interface StrategyContext {
+  symbol: string;
+  timeframe: string;
+  candles: Candle[];
+  indicators: IndicatorSet;
+  currentPrice: number;
+  position: Position | null;
+}
+
+export interface CombinedSignal {
+  action: StrategyActionType;
+  scoreBuy: number;
+  scoreSell: number;
+  scoreHold: number;
+  reasons: string[];
+}
+
+7) Риск и ликвидация
+
+(подробно в 06_risk_math.txt)
+
+export type RiskLevel = 'low' | 'medium' | 'high' | 'extreme';
+
+export interface LeverageRiskResult {
+  symbol: string;
+  side: PositionSide;
+  entryPrice: number;
+  currentPrice: number;
+  size: number;
+  leverage: number;
+  notional: number;
+  initialMargin: number;
+  liquidationPrice: number | null;
+  distanceToLiqPercent: number | null;
+  marginUsagePercent: number;
+  riskLevel: RiskLevel;
+}
+
+export interface RiskSnapshot {
+  liquidationPrice: number | null;
+  distanceToLiqPercent: number | null;
+  marginUsagePercent: number;
+  riskLevel: RiskLevel;
+}
+
+8) LLM
+
+(подробно в 07_llm_prompts.txt)
+
+export type LlmMode = 'pair' | 'position' | 'portfolio' | 'news' | 'simulation';
+
+export interface LlmAnalysisInput {
+  symbol?: string;
+  timeframe?: string;
+  candles?: Candle[];
+  indicators?: IndicatorSet;
+  strategySignal?: CombinedSignal;
+  positions?: Position[];
+  portfolioSummary?: PortfolioSummary;
+  news?: NewsItem[];
+  riskSnapshot?: RiskSnapshot;
+}
+
+export interface LlmAnalysisOutput {
+  summary: string;
+  risks: string[];
+  scenarios: {
+    conservative: string;
+    moderate: string;
+    aggressive: string;
+  };
+  disclaimer: string;
+}
+
+export interface LlmClient {
+  analyze(input: LlmAnalysisInput, mode: LlmMode): Promise<LlmAnalysisOutput>;
+}
+
+ВСЕ ЭТИ ТИПЫ ДОЛЖНЫ БЫТЬ ЭКСПОРТИРОВАНЫ И ИСПОЛЬЗОВАНЫ ПО ВСЕМУ ПРОЕКТУ.
+

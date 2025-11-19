@@ -1,0 +1,122 @@
+ЦЕЛЬ:
+Дать Replit-агенту поэтапный план, как строить проект.
+
+ЭТО ОДИН ИЗ ГЛАВНЫХ ФАЙЛОВ ДЛЯ АГЕНТА.
+
+ШАГ 1. ИНИЦИАЛИЗАЦИЯ ПРОЕКТА
+1.1. Создать проект Node.js с TypeScript.
+1.2. Добавить tsconfig.json с "strict": true, rootDir: "src", outDir: "dist".
+1.3. Создать структуру каталогов, описанную в 01_project_structure.txt.
+1.4. Настроить package.json:
+  - скрипты:
+    - build
+    - start
+    - cli
+    - test
+
+ШАГ 2. ОПРЕДЕЛЕНИЕ ТИПОВ И ИНТЕРФЕЙСОВ
+2.1. Реализовать /src/core/types.ts в соответствии с 02_types_interfaces.txt.
+2.2. Реализовать /src/core/utils.ts с базовыми утилитами (например, функция нормализации таймфреймов, усреднение, стандартное отклонение).
+2.3. Убедиться, что все модули используют эти типы.
+
+ШАГ 3. ИНДИКАТОРЫ
+3.1. Реализовать RSI (rsi.ts).
+3.2. Реализовать EMA (ema.ts).
+3.3. Реализовать SMA (sma.ts).
+3.4. Реализовать MACD (macd.ts).
+3.5. Реализовать Bollinger Bands (bollinger.ts).
+3.6. Реализовать computeIndicators(candles: Candle[]): IndicatorSet (index.ts).
+3.7. Написать юнит-тесты для RSI и EMA, убедиться, что они работают.
+
+ШАГ 4. СТРАТЕГИИ
+4.1. Реализовать baseStrategy.ts (IStrategy, StrategySignal, StrategyContext, CombinedSignal).
+4.2. Реализовать scalpingStrategy.ts.
+4.3. Реализовать intradayStrategy.ts.
+4.4. Реализовать swingStrategy.ts.
+4.5. Реализовать positionStrategy.ts.
+4.6. Реализовать index.ts (runAllStrategies, combineSignals).
+4.7. Написать простые тесты/пример использования.
+
+ШАГ 5. СИМУЛЯТОР
+5.1. Реализовать candleGenerator.ts (generateCandles).
+5.2. Реализовать marketSimulator.ts (MarketSimulator).
+5.3. Реализовать orderExecution.ts (OrderExecutionEngine).
+5.4. Реализовать reporter.ts (формирование SimulationReport).
+5.5. Реализовать tradeBot.ts:
+  - TradeBotConfig
+  - SimulationTradeDecision
+  - SimulationReport
+  - TradeBot.runSimulation()
+  - Логика слоёв: Market → Indicators → Strategies → Risk → LLM → Decision → Execution.
+5.6. Написать пример скрипта, который запускает симуляцию для TONUSDT с параметрами.
+
+ШАГ 6. МАТЕМАТИКА РИСКА
+6.1. Реализовать liquidationRisk.ts, включая:
+  - calcUnrealizedPnl
+  - calcEquity
+  - calcMaintenanceMargin
+  - estimateLiquidationPrice (binary search)
+  - calcDistanceToLiquidation
+  - estimateLeverageRiskForPosition
+6.2. Написать тесты для estimateLiquidationPrice (проверить, что при высоком плече ликвидация близка).
+
+ШАГ 7. РЕАЛЬНЫЕ БИРЖИ
+7.1. Реализовать exchangeBase.ts (ExchangeClient интерфейс).
+7.2. Реализовать kucoinClient.ts через ccxt (read-only).
+7.3. Реализовать gateClient.ts через ccxt (read-only).
+7.4. Реализовать portfolioAnalyzer.ts:
+  - собрать балансы с обеих бирж,
+  - пересчитать в USDT (используя цены ccxt),
+  - построить PortfolioSummary.
+7.5. Реализовать функции для получения позиций (если возможно) и их анализа с leverageRisk.
+
+ШААГ 8. НОВОСТИ/СИГНАЛЫ
+8.1. Реализовать newsTypes.ts (NewsItem и др.).
+8.2. Реализовать newsClient.ts (интерфейсы NewsSource).
+8.3. Реализовать tonNewsSource.ts (заглушка с фейковыми/примерными новостями).
+8.4. Реализовать aggregator.ts (aggregateNews(symbol?)).
+
+ШАГ 9. LLM
+9.1. Реализовать prompts.ts:
+  - BASE_SYSTEM_PROMPT
+  - отдельные system промпты на режимы: pair, position, portfolio, news, simulation.
+  - функцию buildUserPromptForMode.
+9.2. Реализовать llmClient.ts:
+  - LlmClient.analyze(input, mode).
+  - Поддержка ENV: LLM_API_URL, LLM_API_KEY.
+  - Возможность подключить реальное LLM или использовать заглушку.
+9.3. Проверить, что LLM НЕ отдаёт прямых команд "buy/sell".
+
+ШАГ 10. CLI
+10.1. Реализовать cli.ts на основе 08_cli_commands.txt.
+10.2. Реализовать index.ts, который запускает CLI.
+10.3. Проверить:
+  - simulate
+  - trade-sim
+  - analyze-pair (с ccxt)
+  - analyze-portfolio (если есть ключи)
+  - analyze-news (использует заглушки)
+10.4. Документировать команды в README.md.
+
+ШАГ 11. TELEGRAM-БОТ (ОПЦИОНАЛЬНО)
+11.1. Реализовать каркас telegramBot.ts.
+11.2. Реализовать функцию startTelegramBot().
+11.3. Связать команды /pair, /portfolio, /news с уже существующей бизнес-логикой (через фасад).
+
+ШАГ 12. ПОЛИРОВКА
+12.1. Убедиться, что все модули используют типы из core/types.ts.
+12.2. Добавить комментарии TODO, где пользователь сможет расширять функционал (новые биржи, стратегии, индикаторы).
+12.3. Обновить README.md:
+  - Описание проекта.
+  - Аргументы CLI.
+  - Предупреждение о рисках.
+  - Пояснение, что это учебно-аналитический инструмент, не финансовый советник.
+
+ВЫВОД:
+На выходе пользователь должен получить:
+- Готовый TypeScript-проект.
+- Ядро для аналитики и симуляции крипторынка.
+- CLI-интерфейс.
+- Каркас Telegram-бота.
+- Возможность подключить свой LLM API.
+

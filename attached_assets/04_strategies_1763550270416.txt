@@ -1,0 +1,103 @@
+ЦЕЛЬ:
+Определить архитектуру стратегий и их реализацию.
+
+ДИРЕКТОРИЯ:
+  /src/strategies
+
+ОСНОВНЫЕ ИНТЕРФЕЙСЫ (частично дублируется из core/types.ts, но реализуется здесь):
+
+Файл: baseStrategy.ts
+
+import {
+  Candle,
+  IndicatorSet,
+  StrategyActionType,
+  StrategySignalStrength,
+  StrategySignal,
+  StrategyContext,
+  CombinedSignal,
+} from '../core/types';
+
+export interface IStrategy {
+  name: string;
+  supportsTimeframe(timeframe: string): boolean;
+  generateSignal(ctx: StrategyContext): StrategySignal;
+}
+
+StrategyContext:
+- symbol: string;
+- timeframe: string;
+- candles: Candle[];
+- indicators: IndicatorSet;
+- currentPrice: number;
+- position: Position | null;
+
+StrategySignal:
+- strategyName: string;
+- action: 'buy' | 'sell' | 'hold';
+- strength: 'weak' | 'medium' | 'strong';
+- confidence: number; (0..1)
+- reason: string;
+
+CombinedSignal:
+- action: 'buy' | 'sell' | 'hold';
+- scoreBuy: number;
+- scoreSell: number;
+- scoreHold: number;
+- reasons: string[];
+
+ЛОГИКА АГРЕГАЦИИ:
+
+Файл: index.ts
+
+- экспортирует:
+  - массив зарегистрированных стратегий
+  - функцию runAllStrategies(ctx: StrategyContext): StrategySignal[]
+  - функцию combineSignals(signals: StrategySignal[]): CombinedSignal
+
+combineSignals пример:
+- scoreBuy = сумма confidence всех сигналов, где action == 'buy'
+- scoreSell = аналогично
+- scoreHold = аналогично
+- action = тот, у кого score максимальный (при близости — 'hold')
+- reasons = массив reasons всех StrategySignal
+
+КОНКРЕТНЫЕ СТРАТЕГИИ:
+
+1) ScalpingStrategy (scalpingStrategy.ts)
+- Поддерживает таймфреймы: 1m, 3m, 5m.
+- Основная идея:
+  - Ищет краткосрочные всплески RSI, пересечения EMA fast/slow.
+  - Если RSI < 30 и цена у нижней Bollinger полосы → сигнал на buy (weak/medium).
+  - Если RSI > 70 и цена у верхней Bollinger → сигнал на sell.
+- Важно: это не должно быть слишком «умно», главное — структура.
+
+2) IntradayStrategy (intradayStrategy.ts)
+- Таймфреймы: 15m, 30m, 1h.
+- Идея:
+  - Анализ MACD (пересечение MACD и signal).
+  - Анализ EMA fast/slow: пересечение как сигнал смены тренда.
+  - Пример:
+    - EMA fast > EMA slow и MACD > 0 → умеренный бычий сигнал (buy).
+    - EMA fast < EMA slow и MACD < 0 → медвежий сигнал (sell).
+
+3) SwingStrategy (swingStrategy.ts)
+- Таймфреймы: 4h, 1d.
+- Идея:
+  - Комбинация RSI + Bollinger + MACD на более крупных ТФ.
+  - "Mean reversion" + трендовые сигналы.
+
+4) PositionStrategy (positionStrategy.ts)
+- Таймфреймы: 1d, 1w, 1M.
+- Идея:
+  - Очень низкая частота сигналов.
+  - Оценка глобального тренда:
+    - Если EMA slow имеет устойчивый наклон вверх, MACD стабильно > 0, RSI в зоне 40–60 → тренд вверх, но без перегрева (hold/buy).
+    - Если RSI постоянно > 70 → перегрев (risk of reversal).
+
+ВЫВОД:
+- Реализация стратегий может быть относительно простой, но должна:
+  - работать с IndicatorSet;
+  - выдавать StrategySignal с reason;
+  - позволять легко расширять правила в будущем.
+

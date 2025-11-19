@@ -1,0 +1,141 @@
+ЦЕЛЬ:
+Определить CLI-интерфейс.
+
+ДИРЕКТОРИЯ:
+  /src/ui/cli.ts
+  index.ts — точка входа, вызывающая CLI.
+
+ИСПОЛЬЗУЕМ:
+- commander или yargs (на выбор).
+
+КОМАНДЫ:
+
+1) simulate
+
+Назначение:
+- Сгенерировать искусственные свечи и сохранить график.
+
+Аргументы:
+- --symbol <string>         (например, TONUSDT)
+- --timeframe <string>      (например, 1m, 15m)
+- --candles <number>        (например, 500)
+- --initial-price <number>  (например, 2.5)
+- --volatility <number>     (опционально)
+- --trend-strength <number> (0..1)
+- --shock-probability <number> (0..1)
+- --output <string>         (путь к PNG-файлу)
+
+Поведение:
+- Вызывает generateCandles
+- Вызывает charts.renderCandlesToPng
+- Печатает краткую статистику (min/max/avg цены).
+
+2) trade-sim
+
+Назначение:
+- Запустить TradeBot в симуляции.
+
+Аргументы:
+- --symbol <string>
+- --timeframe <string>
+- --candles <number>
+- --initial-price <number>
+- --initial-balance <number>
+- --max-leverage <number>
+- --mmr <number>             (например, 0.005)
+- --history-window <number>  (кол-во свечей для индикаторов)
+
+Поведение:
+- Генерирует свечи.
+- Создаёт MarketSimulator, OrderExecutionEngine, TradeBot.
+- Запускает runSimulation().
+- Печатает SimulationReport (финальный баланс, PnL, количество ликвидаций).
+- При наличии LLM_API_KEY — может дополнительно печатать анализ симуляции (mode='simulation').
+
+3) analyze-pair
+
+Назначение:
+- Анализ реальной торговой пары.
+
+Аргументы:
+- --exchange <string>       ("kucoin" | "gate")
+- --symbol <string>         (например, TONUSDT)
+- --timeframe <string>      ("1m", "15m", "1h", ...)
+- --limit <number>          (кол-во свечей, например, 200)
+
+Поведение:
+- Использует соответствующий ExchangeClient (KuCoin / Gate).
+- Получает исторические свечи (OHLCV).
+- Считает индикаторы (computeIndicators).
+- Прогоняет через стратегии (runAllStrategies + combineSignals).
+- Формирует RiskSnapshot (при наличии позиций).
+- При наличии LLM_API_KEY:
+  - вызывает llmClient.analyze(mode='pair').
+  - печатает summary, риски и сценарии.
+
+4) analyze-portfolio
+
+Назначение:
+- Анализ портфеля по биржам.
+
+Аргументы:
+- нет (использует API-ключи из .env для обеих бирж, если есть).
+
+Поведение:
+- Использует portfolioAnalyzer:
+  - тянет балансы с KuCoin и Gate (ccxt).
+  - строит PortfolioSummary.
+- Если есть LLM:
+  - mode = 'portfolio'.
+- Печатает:
+  - распределение активов,
+  - концентрацию,
+  - долю стейблов,
+  - текстовый обзор.
+
+5) analyze-position
+
+Назначение:
+- Анализ конкретной позиции с оценкой ликвидации и риска.
+
+Аргументы:
+- --exchange <string>
+- --symbol <string>
+
+Поведение:
+- Через ExchangeClient получает информацию о позиции (если доступно).
+- Текущую цену пары.
+- Использует estimateLeverageRiskForPosition.
+- При наличии LLM:
+  - mode='position'.
+- Печатает:
+  - entryPrice, currentPrice, leverage, liquidationPrice, distanceToLiq, riskLevel.
+  - текст LLM с объяснением рисков.
+
+6) analyze-news
+
+Назначение:
+- Анализ новостей/сигналов по монете (особое внимание TON).
+
+Аргументы:
+- --symbol <string> (например, "TON" или "TONUSDT")
+
+Поведение:
+- Вызывает aggregator.aggregateNews(symbol?).
+- При наличии LLM:
+  - mode='news'.
+- Печатает:
+  - список новостей (источник, заголовок, sentiment).
+  - текстовый обзор LLM.
+
+7) replay (опционально)
+
+Назначение:
+- «Прокрутка» заранее сгенерированного или сохранённого ряда свечей.
+
+Поведение:
+- Шаг за шагом печатает в консоль свечи и решения TradeBot.
+
+ИНТЕГРАЦИЯ С index.ts:
+- index.ts просто импортирует cli.ts и запускает обработку аргументов.
+

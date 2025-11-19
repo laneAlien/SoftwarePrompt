@@ -1,0 +1,61 @@
+ЦЕЛЬ:
+Определить каркас Telegram-бота.
+
+ДИРЕКТОРИЯ:
+  /src/ui/telegramBot.ts
+
+СТЕК:
+- node-telegram-bot-api
+
+ТРЕБОВАНИЯ:
+- Это не полноценный продакшн-бот, а каркас.
+- Команды должны вызывать те же функции, что и CLI.
+- Токен берётся из ENV: TELEGRAM_BOT_TOKEN.
+
+ПРИМЕРНАЯ СТРУКТУРА:
+
+import TelegramBot from 'node-telegram-bot-api';
+import { analyzePairCliLike } from './someFacade'; // создать адаптер, который повторяет логику CLI
+
+export function startTelegramBot(): void {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    console.warn('TELEGRAM_BOT_TOKEN is not set. Telegram bot will not start.');
+    return;
+  }
+
+  const bot = new TelegramBot(token, { polling: true });
+
+  bot.onText(/\/start/, (msg) => {
+    bot.sendMessage(msg.chat.id, 'Привет! Я ИИ-помощник по крипторынку (аналитика и симуляция, не автотрейдинг).');
+  });
+
+  // /pair TONUSDT 15m kucoin
+  bot.onText(/\/pair (.+) (.+) (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const symbol = match?.[1];
+    const timeframe = match?.[2];
+    const exchange = match?.[3];
+
+    if (!symbol || !timeframe || !exchange) {
+      bot.sendMessage(chatId, 'Использование: /pair SYMBOL TIMEFRAME EXCHANGE');
+      return;
+    }
+
+    try {
+      const textReport = await analyzePairCliLike({ symbol, timeframe, exchange });
+      bot.sendMessage(chatId, textReport);
+    } catch (err) {
+      bot.sendMessage(chatId, 'Ошибка при анализе пары.');
+    }
+  });
+
+  // Аналогично можно сделать /portfolio, /news TON и т.п.
+
+  console.log('Telegram bot started.');
+}
+
+ВАЖНО:
+- Ключевая бизнес-логика (анализ пары, портфеля, симуляция) не должна жить в telegramBot.ts.
+- telegramBot.ts — только адаптер между Telegram и уже существующими функциями ядра или CLI-фасада.
+

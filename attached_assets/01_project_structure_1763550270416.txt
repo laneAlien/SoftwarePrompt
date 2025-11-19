@@ -1,0 +1,100 @@
+ЦЕЛЬ:
+Определить структуру проекта на TypeScript + Node.js, без Python/FastAPI/Docker.
+
+ОСНОВНОЙ СТЕК:
+- TypeScript
+- Node.js
+- npm (или pnpm/yarn — можно выбрать любой)
+- ccxt (для работы с биржами в режиме read-only)
+- commander или yargs (для CLI)
+- chart.js + chartjs-node-canvas (для отрисовки графиков в PNG)
+- node-telegram-bot-api (для Telegram-бота, каркас)
+- jest или vitest (для тестов)
+
+СТРУКТУРА ПРОЕКТА (минимум):
+
+/src
+  /core
+    types.ts              // Общие типы: свечи, ордера, позиции, портфель, новости, и т.п.
+    utils.ts              // Вспомогательные функции
+  /indicators
+    rsi.ts
+    macd.ts
+    ema.ts
+    sma.ts
+    bollinger.ts
+    index.ts              // computeIndicators и общий интерфейс IndicatorSet
+  /strategies
+    baseStrategy.ts       // Интерфейсы стратегий, StrategySignal и т.п.
+    scalpingStrategy.ts   // Для мелких ТФ (1m, 3m, 5m)
+    intradayStrategy.ts   // Для 15m–1h
+    swingStrategy.ts      // Для 4h–1d
+    positionStrategy.ts   // Для 1d+
+    index.ts
+  /simulation
+    candleGenerator.ts    // Генерация искусственных свечей
+    marketSimulator.ts    // Прокрутка свечей по шагам
+    orderExecution.ts     // Исполнение сделок в симуляции, PnL, ликвидации
+    tradeBot.ts           // ИИ-трейдер в симуляции (многослойная архитектура)
+    reporter.ts           // Отчёты по результатам симуляции
+  /real
+    exchangeBase.ts       // Общий интерфейс клиентов бирж
+    kucoinClient.ts       // Реализация под KuCoin через ccxt (read-only)
+    gateClient.ts         // Реализация под Gate.io через ccxt (read-only)
+    portfolioAnalyzer.ts  // Агрегация балансов по биржам
+    liquidationRisk.ts    // Математика плеча, ликвидации, маржи (общая)
+  /news
+    newsTypes.ts          // Типы для новостей/сигналов/промо
+    newsClient.ts         // Интерфейсы для источников новостей
+    tonNewsSource.ts      // Примерный источник по TON (заглушка)
+    aggregator.ts         // Агрегатор новостей/сигналов по монетам
+  /llm
+    llmClient.ts          // Обёртка над LLM API
+    prompts.ts            // System/User промпты
+  /ui
+    cli.ts                // CLI-команды на commander/yargs
+    charts.ts             // Отрисовка графиков в PNG
+    asciiChart.ts         // ASCII-графики в терминале (опционально)
+    telegramBot.ts        // Каркас Telegram-бота (минимальный)
+  index.ts                // Точка входа приложения (запускает CLI)
+
+config-файлы:
+- tsconfig.json           // TypeScript конфигурация (strict=true)
+- package.json            // зависимости, скрипты
+- .env.example            // пример переменных окружения
+- jest.config.ts или vitest.config.ts (опционально для тестов)
+- README.md               // описание, команды, предупреждение о рисках
+
+ПАКЕТЫ, КОТОРЫЕ НУЖНО ДОБАВИТЬ В ЗАВИСИМОСТИ (примерный список):
+- dependencies:
+  - typescript
+  - ts-node или tsx
+  - ccxt
+  - commander или yargs
+  - chart.js
+  - chartjs-node-canvas
+  - node-telegram-bot-api
+  - dotenv
+- devDependencies:
+  - @types/node
+  - jest или vitest
+  - ts-jest или vitest-related tooling
+
+ТСCONFIG:
+- "strict": true
+- target: "ES2020" или лучше
+- module: "commonjs" или "ESNext" (в зависимости от выбранного подхода)
+- rootDir: "src"
+- outDir: "dist"
+
+СКРИПТЫ package.json:
+- "build": компиляция TypeScript → dist
+- "start": запуск index.ts (через ts-node/tsx или из dist)
+- "cli": запуск cli.ts
+- "test": юнит-тесты
+
+ВАЖНО:
+- Структура модульная, каждый каталог решает свою задачу.
+- UI (CLI, Telegram) не должен содержать бизнес-логику — только вызов ядра.
+- Не завязывайся на конкретной бирже в ядре — всё через интерфейсы.
+
