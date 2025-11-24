@@ -65,6 +65,7 @@ program
   .option('--max-leverage <number>', 'Maximum leverage', '5')
   .option('--mmr <number>', 'Maintenance margin rate', '0.005')
   .option('--history-window <number>', 'History window for indicators', '100')
+  .option('--aggressiveness <number>', 'Trade aggressiveness multiplier (0.5-2.0)', '1')
   .action(async (options) => {
     console.log(`\nStarting TradeBot simulation for ${options.symbol}...\n`);
     
@@ -90,6 +91,7 @@ program
         maxLeverage: parseFloat(options.maxLeverage),
         mmr: parseFloat(options.mmr),
         historyWindow: parseInt(options.historyWindow),
+        aggressiveness: parseFloat(options.aggressiveness),
       },
       simulator,
       execution,
