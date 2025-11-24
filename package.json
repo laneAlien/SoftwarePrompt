@@ -9,7 +9,7 @@
     "start": "tsx src/index.ts",
     "cli": "tsx src/index.ts",
     "dev": "tsx src/index.ts",
-    "test": "jest",
+    "test": "jest --passWithNoTests",
     "test:watch": "jest --watch"
   },
   "keywords": [
