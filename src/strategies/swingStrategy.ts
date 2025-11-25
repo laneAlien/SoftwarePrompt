@@ -63,6 +63,18 @@ export class SwingStrategy implements IStrategy {
       reason = 'Neutral RSI with negative MACD momentum';
     }
 
+    if (ctx.reportSummary) {
+      const { totalProfit, totalSpent, totalVoucherIncome } = ctx.reportSummary;
+      if (totalProfit < 0) {
+        confidence *= 0.8;
+        reason += ' | Swing bias trimmed due to negative report PnL';
+      }
+      if (totalSpent > totalVoucherIncome && action === 'buy') {
+        action = 'hold';
+        reason += ' | Spending exceeds voucher income; holding back entries';
+      }
+    }
+
     return { strategyName: this.name, action, strength, confidence, reason };
   }
 }

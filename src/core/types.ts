@@ -102,6 +102,8 @@ export interface IndicatorSet {
   emaSlow?: number;
   sma?: number;
   bollinger?: BollingerBands;
+  obv?: number;
+  vwap?: number;
 }
 
 export type StrategySignalStrength = 'weak' | 'medium' | 'strong';
@@ -122,6 +124,7 @@ export interface StrategyContext {
   indicators: IndicatorSet;
   currentPrice: number;
   position: Position | null;
+  reportSummary?: import('../reports/reportParser').ReportSummary;
 }
 
 export interface CombinedSignal {

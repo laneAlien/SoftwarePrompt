@@ -1,7 +1,7 @@
 import ccxt from 'ccxt';
 import { ExchangeClient } from './exchangeBase';
 import { Candle, PortfolioAsset } from '../core/types';
-import { createExchangeOptions, withRetry } from './exchangeUtils';
+import { createExchangeOptions, withRetry, fetchFullOHLCV } from './exchangeUtils';
 
 export class KucoinClient implements ExchangeClient {
   name = 'kucoin';
@@ -20,18 +20,29 @@ export class KucoinClient implements ExchangeClient {
     );
   }
 
-  async fetchCandles(symbol: string, timeframe: string, limit: number = 200): Promise<Candle[]> {
+  async fetchCandles(
+    symbol: string,
+    timeframe: string,
+    limit: number = 200,
+    since?: number,
+    to?: number
+  ): Promise<Candle[]> {
     await this.ensureMarkets();
 
-    const cacheKey = `${symbol}:${timeframe}:${limit}`;
+    const cacheKey = `${symbol}:${timeframe}:${limit}:${since ?? 'recent'}:${to ?? 'now'}`;
     const cached = this.candleCache.get(cacheKey);
     if (cached) return cached;
 
     try {
-      const ohlcv = await withRetry(() => this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit), {
-        onRetry: (attempt, error) =>
-          console.warn(`KuCoin fetchOHLCV retry ${attempt}/${3}:`, (error as Error).message || error),
-      });
+      let ohlcv: any[];
+      if (since && to) {
+        ohlcv = await fetchFullOHLCV(this.exchange, symbol, timeframe, since, to);
+      } else {
+        ohlcv = await withRetry(() => this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit), {
+          onRetry: (attempt, error) =>
+            console.warn(`KuCoin fetchOHLCV retry ${attempt}/${3}:`, (error as Error).message || error),
+        });
+      }
 
       const candles = ohlcv.map((candle) => ({
         timestamp: candle[0],

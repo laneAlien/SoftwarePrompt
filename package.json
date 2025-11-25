@@ -27,7 +27,13 @@
     "commander": "^11.1.0",
     "dotenv": "^16.3.1",
     "node-telegram-bot-api": "^0.64.0",
-    "openai": "^6.9.1"
+    "openai": "^6.9.1",
+    "rss-parser": "^3.13.0",
+    "csv-parse": "^5.5.6",
+    "xlsx": "^0.18.5",
+    "chartjs-node-canvas": "^4.1.9",
+    "asciichart": "^1.5.26",
+    "pdfkit": "^0.15.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

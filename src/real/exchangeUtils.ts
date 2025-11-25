@@ -48,3 +48,35 @@ export function createExchangeOptions(overrides?: Partial<ccxt.Exchange>) {
     ...overrides,
   } as ccxt.Exchange;
 }
+
+const ohlcvCache = new Map<string, any[]>();
+
+export async function fetchFullOHLCV(
+  exchange: ccxt.Exchange,
+  symbol: string,
+  timeframe: string,
+  since: number,
+  to: number
+): Promise<any[]> {
+  const cacheKey = `${exchange.id}:${symbol}:${timeframe}:${since}:${to}`;
+  if (ohlcvCache.has(cacheKey)) {
+    return ohlcvCache.get(cacheKey)!;
+  }
+
+  const limit = 1000;
+  let fetchSince = since;
+  const all: any[] = [];
+
+  while (fetchSince < to) {
+    const batch = await withRetry(() => exchange.fetchOHLCV(symbol, timeframe, fetchSince, limit));
+    if (!batch.length) break;
+    all.push(...batch);
+    const lastTimestamp = batch[batch.length - 1][0];
+    if (!lastTimestamp || lastTimestamp <= fetchSince) break;
+    fetchSince = lastTimestamp + exchange.parseTimeframe(timeframe) * 1000;
+    if (lastTimestamp >= to) break;
+  }
+
+  ohlcvCache.set(cacheKey, all);
+  return all;
+}

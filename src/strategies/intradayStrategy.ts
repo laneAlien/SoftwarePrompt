@@ -61,6 +61,18 @@ export class IntradayStrategy implements IStrategy {
       reason = 'Moderate bearish trend (EMA + MACD negative)';
     }
 
+    if (ctx.reportSummary) {
+      const { totalProfit, totalSpent, totalVoucherIncome } = ctx.reportSummary;
+      if (totalProfit < 0) {
+        confidence *= 0.8;
+        reason += ' | Negative profit in external report';
+      }
+      if (totalSpent > totalVoucherIncome && action === 'buy') {
+        action = 'hold';
+        reason += ' | Elevated spend vs voucher income; skipping buys';
+      }
+    }
+
     return { strategyName: this.name, action, strength, confidence, reason };
   }
 }

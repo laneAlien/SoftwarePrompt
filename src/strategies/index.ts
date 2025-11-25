@@ -4,6 +4,9 @@ import { IntradayStrategy } from './intradayStrategy';
 import { SwingStrategy } from './swingStrategy';
 import { PositionStrategy } from './positionStrategy';
 import { StrategyContext, StrategySignal, CombinedSignal } from '../core/types';
+import { VolumeStrategy } from './volumeStrategy';
+import { FundingStrategy } from './fundingStrategy';
+import { MultiTimeframeStrategy } from './multiTimeframeStrategy';
 
 export * from './baseStrategy';
 export * from './scalpingStrategy';
@@ -16,6 +19,9 @@ const ALL_STRATEGIES: IStrategy[] = [
   new IntradayStrategy(),
   new SwingStrategy(),
   new PositionStrategy(),
+  new VolumeStrategy(),
+  new FundingStrategy(),
+  new MultiTimeframeStrategy(),
 ];
 
 export function runAllStrategies(ctx: StrategyContext): StrategySignal[] {

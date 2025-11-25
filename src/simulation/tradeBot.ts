@@ -4,6 +4,7 @@ import { SimulationReport, buildSimulationReport } from './reporter';
 import { computeIndicators } from '../indicators';
 import { runAllStrategies, combineSignals } from '../strategies';
 import { LlmClient, RiskLevel, StrategyContext, CombinedSignal } from '../core/types';
+import { ReportSummary } from '../reports/reportParser';
 import { determineRiskLevel } from '../real/liquidationRisk';
 
 export interface TradeBotConfig {
@@ -14,6 +15,7 @@ export interface TradeBotConfig {
   mmr: number;
   historyWindow: number;
   aggressiveness: number;
+  reportSummary?: ReportSummary;
 }
 
 export interface SimulationTradeDecision {
@@ -69,6 +71,7 @@ export class TradeBot {
         indicators,
         currentPrice: marketState.currentPrice,
         position: null,
+        reportSummary: this.config.reportSummary,
       };
 
       const signals = runAllStrategies(strategyContext);

@@ -11,6 +11,11 @@ import { computeIndicators } from '../indicators';
 import { runAllStrategies, combineSignals } from '../strategies';
 import { OpenAILlmClient } from '../llm/llmClient';
 import { aggregateNews } from '../news/aggregator';
+import { fetchNews } from '../news/newsFetcher';
+import { parseReport } from '../reports/reportParser';
+import { renderAsciiChart, renderChartPNG } from './charts';
+import { exportReport } from '../reports/reportGenerator';
+import { validateEnv } from '../utils/env';
 
 const program = new Command();
 
@@ -66,9 +71,14 @@ program
   .option('--mmr <number>', 'Maintenance margin rate', '0.005')
   .option('--history-window <number>', 'History window for indicators', '100')
   .option('--aggressiveness <number>', 'Trade aggressiveness multiplier (0.5-2.0)', '1')
+  .option('--report <path>', 'External performance report (CSV/TSV/Excel) to adjust risk')
+  .option('--save-chart', 'Save PNG and ASCII chart for the simulation')
+  .option('--export-report <format>', 'Export simulation report as pdf|json|csv')
   .action(async (options) => {
     console.log(`\nStarting TradeBot simulation for ${options.symbol}...\n`);
-    
+
+    const reportSummary = options.report ? await parseReport(options.report) : undefined;
+
     const candles = generateCandles({
       initialPrice: parseFloat(options.initialPrice),
       candlesCount: parseInt(options.candles),
@@ -88,18 +98,30 @@ program
         symbol: options.symbol,
         timeframe: options.timeframe,
         initialBalanceUsd: parseFloat(options.initialBalance),
-        maxLeverage: parseFloat(options.maxLeverage),
-        mmr: parseFloat(options.mmr),
-        historyWindow: parseInt(options.historyWindow),
-        aggressiveness: parseFloat(options.aggressiveness),
-      },
-      simulator,
-      execution,
-      llmClient
-    );
+      maxLeverage: parseFloat(options.maxLeverage),
+      mmr: parseFloat(options.mmr),
+      historyWindow: parseInt(options.historyWindow),
+      aggressiveness: parseFloat(options.aggressiveness),
+      reportSummary,
+    },
+    simulator,
+    execution,
+    llmClient
+  );
 
     const report = await bot.runSimulation();
     console.log('\n' + formatSimulationReport(report));
+
+    if (options.saveChart) {
+      const pngPath = await renderChartPNG(candles, 'chart.png');
+      console.log(`Saved chart to ${pngPath}`);
+      console.log(renderAsciiChart(candles));
+    }
+
+    if (options.exportReport) {
+      const exported = exportReport(report, { format: options.exportReport });
+      console.log(`Exported simulation report -> ${exported}`);
+    }
   });
 
 program
@@ -109,12 +131,27 @@ program
   .requiredOption('--symbol <string>', 'Trading pair symbol')
   .requiredOption('--timeframe <string>', 'Timeframe')
   .option('--limit <number>', 'Number of candles', '200')
+  .option('--since <string>', 'Start date (YYYY-MM-DD) for historical data')
+  .option('--months <number>', 'Number of months back to fetch')
   .action(async (options) => {
     console.log(`\nAnalyzing ${options.symbol} on ${options.exchange}...\n`);
 
     try {
       const client = options.exchange === 'kucoin' ? new KucoinClient() : new GateClient();
-      const candles = await client.fetchCandles(options.symbol, options.timeframe, parseInt(options.limit));
+      let since: number | undefined;
+      let to: number | undefined;
+      if (options.since) {
+        since = Date.parse(options.since);
+        to = Date.now();
+      } else if (options.months) {
+        const months = parseInt(options.months);
+        to = Date.now();
+        const date = new Date();
+        date.setMonth(date.getMonth() - months);
+        since = date.getTime();
+      }
+
+      const candles = await client.fetchCandles(options.symbol, options.timeframe, parseInt(options.limit), since, to);
       const currentPrice = candles[candles.length - 1].close;
 
       const indicators = computeIndicators(candles);
@@ -200,19 +237,32 @@ program
     console.log('\nFetching news and signals...\n');
 
     try {
-      const news = await aggregateNews(options.symbol);
+      const news = await fetchNews(options.symbol);
 
       console.log(`Found ${news.length} items:\n`);
       news.forEach((item) => {
-        console.log(`[${item.type.toUpperCase()}] ${item.title}`);
-        console.log(`  Sentiment: ${item.sentiment} | Source: ${item.source}`);
-        console.log(`  ${item.summary}\n`);
+        console.log(`${item.title}`);
+        console.log(`  Sentiment: ${item.sentiment} | Source: ${item.source} | Link: ${item.link}`);
       });
+
+      if (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY) {
+        const llm = new OpenAILlmClient();
+        const analysis = await llm.analyze(
+          {
+            news,
+            symbol: options.symbol,
+          } as any,
+          'news'
+        );
+        console.log(`\nLLM summary:\n${analysis.summary}`);
+        console.log(`Scenarios:`, analysis.scenarios);
+      }
     } catch (error) {
       console.error('Error analyzing news:', error);
     }
   });
 
 export function runCLI() {
+  validateEnv(['KUCOIN_API_KEY', 'KUCOIN_API_SECRET', 'KUCOIN_API_PASSPHRASE']);
   program.parse();
 }
