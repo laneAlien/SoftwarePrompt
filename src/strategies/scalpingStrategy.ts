@@ -52,6 +52,18 @@ export class ScalpingStrategy implements IStrategy {
       }
     }
 
+    if (ctx.reportSummary) {
+      const { totalProfit, totalSpent, totalVoucherIncome } = ctx.reportSummary;
+      if (totalProfit < 0) {
+        confidence *= 0.8;
+        reason += ' | Confidence reduced due to negative external PnL';
+      }
+      if (totalSpent > totalVoucherIncome && action === 'buy') {
+        action = 'hold';
+        reason += ' | Spending outpaces voucher income; pausing new entries';
+      }
+    }
+
     return { strategyName: this.name, action, strength, confidence, reason };
   }
 }

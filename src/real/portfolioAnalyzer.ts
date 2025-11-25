@@ -6,31 +6,43 @@ export async function analyzePortfolio(
   clients: ExchangeClient[]
 ): Promise<PortfolioSummary> {
   const allAssets: PortfolioAsset[] = [];
-
-  for (const client of clients) {
-    try {
-      const assets = await client.fetchBalance();
-      allAssets.push(...assets);
-    } catch (error) {
-      console.warn(`Failed to fetch balance from ${client.name}:`, error);
-    }
-  }
-
-  for (const asset of allAssets) {
-    if (!isStablecoin(asset.symbol)) {
+  const balanceResults = await Promise.all(
+    clients.map(async (client) => {
       try {
-        const client = clients.find((c) => c.name === asset.exchange);
-        if (client) {
-          const price = await client.getCurrentPrice(`${asset.symbol}/USDT`);
-          asset.valueUsd = asset.amount * price;
-        }
+        return await client.fetchBalance();
       } catch (error) {
-        asset.valueUsd = 0;
+        console.warn(`Failed to fetch balance from ${client.name}:`, error);
+        return [] as PortfolioAsset[];
       }
-    } else {
-      asset.valueUsd = asset.amount;
-    }
-  }
+    })
+  );
+
+  balanceResults.forEach((assets) => allAssets.push(...assets));
+
+  const priceCache = new Map<string, number>();
+
+  await Promise.all(
+    allAssets.map(async (asset) => {
+      if (!isStablecoin(asset.symbol)) {
+        try {
+          const client = clients.find((c) => c.name === asset.exchange);
+          if (client) {
+            const marketSymbol = `${asset.symbol}/USDT`;
+            if (!priceCache.has(marketSymbol)) {
+              const price = await client.getCurrentPrice(marketSymbol);
+              priceCache.set(marketSymbol, price);
+            }
+            const cachedPrice = priceCache.get(marketSymbol) || 0;
+            asset.valueUsd = asset.amount * cachedPrice;
+          }
+        } catch (error) {
+          asset.valueUsd = 0;
+        }
+      } else {
+        asset.valueUsd = asset.amount;
+      }
+    })
+  );
 
   const totalValueUsd = allAssets.reduce((sum, asset) => sum + (asset.valueUsd || 0), 0);
 
