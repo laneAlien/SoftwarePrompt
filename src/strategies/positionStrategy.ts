@@ -55,6 +55,18 @@ export class PositionStrategy implements IStrategy {
       reason = 'Moderate positive momentum - hold existing positions';
     }
 
+    if (ctx.reportSummary) {
+      const { totalProfit, totalSpent, totalVoucherIncome } = ctx.reportSummary;
+      if (totalProfit < 0) {
+        confidence *= 0.8;
+        reason += ' | Long-horizon signal tempered by external losses';
+      }
+      if (totalSpent > totalVoucherIncome && action === 'buy') {
+        action = 'hold';
+        reason += ' | Expense imbalance detected; pausing accumulation';
+      }
+    }
+
     return { strategyName: this.name, action, strength, confidence, reason };
   }
 }

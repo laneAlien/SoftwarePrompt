@@ -11,6 +11,13 @@ import { computeIndicators } from '../indicators';
 import { runAllStrategies, combineSignals } from '../strategies';
 import { OpenAILlmClient } from '../llm/llmClient';
 import { aggregateNews } from '../news/aggregator';
+import { fetchNews } from '../news/newsFetcher';
+import { parseReport } from '../reports/reportParser';
+import { renderAsciiChart, renderChartPNG } from './charts';
+import { exportReport } from '../reports/reportGenerator';
+import { validateEnv } from '../utils/env';
+import { fetchFundingRate } from '../indicators/fundingRate';
+import { clearOhlcvCache } from '../real/exchangeUtils';
 
 const program = new Command();
 
@@ -65,9 +72,16 @@ program
   .option('--max-leverage <number>', 'Maximum leverage', '5')
   .option('--mmr <number>', 'Maintenance margin rate', '0.005')
   .option('--history-window <number>', 'History window for indicators', '100')
+  .option('--aggressiveness <number>', 'Trade aggressiveness multiplier (0.5-2.0)', '1')
+  .option('--report <path>', 'External performance report (CSV/TSV/Excel) to adjust risk')
+  .option('--save-chart', 'Save PNG and ASCII chart for the simulation')
+  .option('--export-report <format>', 'Export simulation report as pdf|json|csv')
+  .option('--no-llm', 'Disable LLM post-run analysis')
   .action(async (options) => {
     console.log(`\nStarting TradeBot simulation for ${options.symbol}...\n`);
-    
+
+    const reportSummary = options.report ? await parseReport(options.report) : undefined;
+
     const candles = generateCandles({
       initialPrice: parseFloat(options.initialPrice),
       candlesCount: parseInt(options.candles),
@@ -80,24 +94,61 @@ program
     const simulator = new MarketSimulator(options.symbol, options.timeframe, candles);
     const execution = new OrderExecutionEngine(parseFloat(options.initialBalance));
     
-    const llmClient = process.env.OPENAI_API_KEY ? new OpenAILlmClient() : undefined;
+    const llmClient = options.noLlm
+      ? undefined
+      : process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY
+      ? new OpenAILlmClient()
+      : undefined;
 
     const bot = new TradeBot(
       {
         symbol: options.symbol,
         timeframe: options.timeframe,
         initialBalanceUsd: parseFloat(options.initialBalance),
-        maxLeverage: parseFloat(options.maxLeverage),
-        mmr: parseFloat(options.mmr),
-        historyWindow: parseInt(options.historyWindow),
-      },
-      simulator,
-      execution,
-      llmClient
-    );
+      maxLeverage: parseFloat(options.maxLeverage),
+      mmr: parseFloat(options.mmr),
+      historyWindow: parseInt(options.historyWindow),
+      aggressiveness: parseFloat(options.aggressiveness),
+      reportSummary,
+    },
+    simulator,
+    execution,
+    llmClient
+  );
 
     const report = await bot.runSimulation();
     console.log('\n' + formatSimulationReport(report));
+
+    if (options.saveChart) {
+      const pngPath = await renderChartPNG(candles, 'chart.png');
+      console.log(`Saved chart to ${pngPath}`);
+      console.log(renderAsciiChart(candles));
+    }
+
+    if (options.exportReport) {
+      const exported = exportReport(report, { format: options.exportReport });
+      console.log(`Exported simulation report -> ${exported}`);
+    }
+
+    if (llmClient) {
+      const llmSummary = await llmClient.analyze(
+        {
+          symbol: options.symbol,
+          timeframe: options.timeframe,
+          simulation: {
+            pnl: report.pnl,
+            trades: report.trades,
+            liquidations: report.liquidations,
+            maxDrawdownPercent: report.maxDrawdown,
+          },
+          reportSummary,
+        },
+        'simulation'
+      );
+      console.log('\n=== LLM Simulation Insights ===');
+      console.log(llmSummary.summary);
+      console.log('Risks:', llmSummary.risks.join('; '));
+    }
   });
 
 program
@@ -107,15 +158,48 @@ program
   .requiredOption('--symbol <string>', 'Trading pair symbol')
   .requiredOption('--timeframe <string>', 'Timeframe')
   .option('--limit <number>', 'Number of candles', '200')
+  .option('--since <string>', 'Start date (YYYY-MM-DD) for historical data')
+  .option('--months <number>', 'Number of months back to fetch')
+  .option('--no-llm', 'Disable LLM analysis output')
+  .option('--no-cache', 'Bypass OHLCV cache for fresh pulls')
   .action(async (options) => {
     console.log(`\nAnalyzing ${options.symbol} on ${options.exchange}...\n`);
 
     try {
+      if (options.noCache) {
+        clearOhlcvCache();
+      }
       const client = options.exchange === 'kucoin' ? new KucoinClient() : new GateClient();
-      const candles = await client.fetchCandles(options.symbol, options.timeframe, parseInt(options.limit));
+      let since: number | undefined;
+      let to: number | undefined;
+      if (options.since) {
+        since = Date.parse(options.since);
+        to = Date.now();
+      } else if (options.months) {
+        const months = parseInt(options.months);
+        to = Date.now();
+        const date = new Date();
+        date.setMonth(date.getMonth() - months);
+        since = date.getTime();
+      }
+
+      const candles = await client.fetchCandles(
+        options.symbol,
+        options.timeframe,
+        parseInt(options.limit),
+        since,
+        to,
+        { skipCache: options.noCache }
+      );
       const currentPrice = candles[candles.length - 1].close;
 
-      const indicators = computeIndicators(candles);
+      let fundingRate: number | undefined;
+      if (options.timeframe.endsWith('m') || options.timeframe.endsWith('h')) {
+        const funding = await fetchFundingRate((client as any).exchange ?? (client as any), options.symbol).catch(() => null);
+        fundingRate = funding?.rate;
+      }
+
+      const indicators = computeIndicators(candles, { fundingRate });
       const signals = runAllStrategies({
         symbol: options.symbol,
         timeframe: options.timeframe,
@@ -132,6 +216,9 @@ program
       if (indicators.macd) console.log(`  MACD: ${indicators.macd.macd.toFixed(4)}`);
       if (indicators.emaFast) console.log(`  EMA Fast: ${indicators.emaFast.toFixed(2)}`);
       if (indicators.emaSlow) console.log(`  EMA Slow: ${indicators.emaSlow.toFixed(2)}`);
+      if (typeof indicators.obv === 'number') console.log(`  OBV: ${indicators.obv.toFixed(2)}`);
+      if (typeof indicators.vwap === 'number') console.log(`  VWAP: ${indicators.vwap.toFixed(4)}`);
+      if (typeof indicators.fundingRate === 'number') console.log(`  Funding Rate: ${indicators.fundingRate}`);
 
       console.log(`\nCombined Signal: ${combinedSignal.action.toUpperCase()}`);
       console.log(`  Buy Score: ${combinedSignal.scoreBuy.toFixed(2)}`);
@@ -141,18 +228,22 @@ program
       console.log(`\nReasons:`);
       combinedSignal.reasons.forEach((r) => console.log(`  - ${r}`));
 
-      if (process.env.OPENAI_API_KEY) {
+      if (!options.noLlm && (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY)) {
         const llmClient = new OpenAILlmClient();
-        const analysis = await llmClient.analyze({
-          symbol: options.symbol,
-          timeframe: options.timeframe,
-          candles,
-          indicators,
-          strategySignal: combinedSignal,
-        }, 'pair');
+        const analysis = await llmClient.analyze(
+          {
+            symbol: options.symbol,
+            timeframe: options.timeframe,
+            candles,
+            indicators,
+            strategySignal: combinedSignal,
+          },
+          'pair'
+        );
 
         console.log(`\n=== LLM Analysis ===`);
         console.log(analysis.summary);
+        console.log('Risks:', analysis.risks.join('; '));
         console.log(`\nDisclaimer: ${analysis.disclaimer}`);
       }
     } catch (error) {
@@ -163,7 +254,8 @@ program
 program
   .command('analyze-portfolio')
   .description('Analyze portfolio across exchanges')
-  .action(async () => {
+  .option('--no-llm', 'Disable LLM analysis')
+  .action(async (options) => {
     console.log('\nAnalyzing portfolio...\n');
 
     try {
@@ -185,6 +277,19 @@ program
       portfolio.assets.slice(0, 5).forEach((asset) => {
         console.log(`  ${asset.symbol}: $${asset.valueUsd?.toFixed(2)} (${asset.exchange})`);
       });
+
+      if (!options.noLlm && (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY)) {
+        const llm = new OpenAILlmClient();
+        const analysis = await llm.analyze(
+          {
+            portfolioSummary: portfolio,
+          },
+          'portfolio'
+        );
+        console.log('\n=== LLM Portfolio View ===');
+        console.log(analysis.summary);
+        console.log('Risks:', analysis.risks.join('; '));
+      }
     } catch (error) {
       console.error('Error analyzing portfolio:', error);
     }
@@ -202,15 +307,35 @@ program
 
       console.log(`Found ${news.length} items:\n`);
       news.forEach((item) => {
-        console.log(`[${item.type.toUpperCase()}] ${item.title}`);
-        console.log(`  Sentiment: ${item.sentiment} | Source: ${item.source}`);
-        console.log(`  ${item.summary}\n`);
+        console.log(`${item.title}`);
+        console.log(`  Sentiment: ${item.sentiment} | Source: ${item.source} | Link: ${item.link}`);
       });
+
+      if (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY) {
+        const llm = new OpenAILlmClient();
+        const analysis = await llm.analyze(
+          {
+            news,
+            symbol: options.symbol,
+          } as any,
+          'news'
+        );
+        console.log(`\nLLM summary:\n${analysis.summary}`);
+        console.log(`Scenarios:`, analysis.scenarios);
+      }
     } catch (error) {
       console.error('Error analyzing news:', error);
     }
   });
 
 export function runCLI() {
+  validateEnv([
+    'KUCOIN_API_KEY',
+    'KUCOIN_API_SECRET',
+    'KUCOIN_API_PASSPHRASE',
+    'GATE_API_KEY',
+    'GATE_API_SECRET',
+    'DEEPSEEK_API_KEY',
+  ]);
   program.parse();
 }
