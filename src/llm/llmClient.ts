@@ -15,10 +15,21 @@ export class OpenAILlmClient implements LlmClient {
   private model: string;
 
   constructor(apiKey?: string, model?: string) {
+    const deepseekKey = process.env.DEEPSEEK_API_KEY;
+    const openaiKey = process.env.OPENAI_API_KEY;
+
+    // Prefer DeepSeek when its key is available. If an explicit API key is provided and
+    // matches the DeepSeek env key, treat it as DeepSeek to ensure the proper base URL/model.
+    const useDeepseek = (!!deepseekKey && !apiKey) || (!!apiKey && apiKey === deepseekKey);
+    const selectedKey = apiKey || deepseekKey || openaiKey;
+    const baseURL = useDeepseek ? 'https://api.deepseek.com/v1' : undefined;
+
     this.openai = new OpenAI({
-      apiKey: apiKey || process.env.OPENAI_API_KEY,
+      apiKey: selectedKey,
+      baseURL,
     });
-    this.model = model || process.env.LLM_MODEL || 'gpt-3.5-turbo';
+    this.model =
+      model || (useDeepseek ? process.env.DEEPSEEK_MODEL || 'deepseek-chat' : process.env.LLM_MODEL || 'gpt-3.5-turbo');
   }
 
   async analyze(input: LlmAnalysisInput, mode: LlmMode): Promise<LlmAnalysisOutput> {

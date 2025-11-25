@@ -4,14 +4,19 @@ import { ema } from './ema';
 import { sma } from './sma';
 import { macd } from './macd';
 import { bollinger } from './bollinger';
+import { calculateOBV } from './obv';
+import { calculateVWAP } from './vwap';
 
 export * from './rsi';
 export * from './ema';
 export * from './sma';
 export * from './macd';
 export * from './bollinger';
+export * from './obv';
+export * from './vwap';
+export * from './fundingRate';
 
-export function computeIndicators(candles: Candle[]): IndicatorSet {
+export function computeIndicators(candles: Candle[], opts?: { fundingRate?: number }): IndicatorSet {
   if (candles.length === 0) {
     return {};
   }
@@ -69,6 +74,16 @@ export function computeIndicators(candles: Candle[]): IndicatorSet {
         lower: bollingerValues.lower[lastIndex],
       } as BollingerBands;
     }
+  }
+
+  const obvSeries = calculateOBV(candles);
+  indicators.obv = obvSeries[lastIndex];
+
+  const vwapSeries = calculateVWAP(candles);
+  indicators.vwap = vwapSeries[lastIndex];
+
+  if (typeof opts?.fundingRate === 'number') {
+    indicators.fundingRate = opts.fundingRate;
   }
 
   return indicators;

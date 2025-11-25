@@ -4,6 +4,9 @@ import { IntradayStrategy } from './intradayStrategy';
 import { SwingStrategy } from './swingStrategy';
 import { PositionStrategy } from './positionStrategy';
 import { StrategyContext, StrategySignal, CombinedSignal } from '../core/types';
+import { VolumeStrategy } from './volumeStrategy';
+import { FundingStrategy } from './fundingStrategy';
+import { MultiTimeframeStrategy } from './multiTimeframeStrategy';
 
 export * from './baseStrategy';
 export * from './scalpingStrategy';
@@ -16,7 +19,20 @@ const ALL_STRATEGIES: IStrategy[] = [
   new IntradayStrategy(),
   new SwingStrategy(),
   new PositionStrategy(),
+  new VolumeStrategy(),
+  new FundingStrategy(),
+  new MultiTimeframeStrategy(),
 ];
+
+const STRATEGY_WEIGHTS: Record<string, number> = {
+  Scalping: 1,
+  Intraday: 1,
+  Swing: 1,
+  Position: 0.8,
+  Volume: 0.7,
+  Funding: 0.6,
+  'Multi-Timeframe': 0.9,
+};
 
 export function runAllStrategies(ctx: StrategyContext): StrategySignal[] {
   const signals: StrategySignal[] = [];
@@ -40,12 +56,15 @@ export function combineSignals(signals: StrategySignal[]): CombinedSignal {
   for (const signal of signals) {
     reasons.push(`[${signal.strategyName}] ${signal.reason}`);
 
+    const weight = STRATEGY_WEIGHTS[signal.strategyName] ?? 1;
+    const weighted = signal.confidence * weight;
+
     if (signal.action === 'buy') {
-      scoreBuy += signal.confidence;
+      scoreBuy += weighted;
     } else if (signal.action === 'sell') {
-      scoreSell += signal.confidence;
+      scoreSell += weighted;
     } else {
-      scoreHold += signal.confidence;
+      scoreHold += weighted;
     }
   }
 

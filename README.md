@@ -31,17 +31,32 @@ Copy `.env.example` to `.env` and configure:
 cp .env.example .env
 ```
 
-### Required for LLM Analysis (Optional)
-- `OPENAI_API_KEY`: Your OpenAI API key
+### Environment Variables
 
-### Required for Real Exchange Data (Optional)
-- `KUCOIN_API_KEY`, `KUCOIN_API_SECRET`, `KUCOIN_API_PASSPHRASE`
-- `GATE_API_KEY`, `GATE_API_SECRET`
+Below is a complete example of the `.env` file (all keys are optional, but exchange keys enable live data):
 
-### Required for Telegram Bot (Optional)
-- `TELEGRAM_BOT_TOKEN`
+```
+# LLM Providers
+OPENAI_API_KEY=your_openai_api_key_here
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
 
-**Note:** Exchange API keys are used in READ-ONLY mode. No real trading is executed.
+# KuCoin (read-only)
+KUCOIN_API_KEY=your_kucoin_api_key
+KUCOIN_API_SECRET=your_kucoin_api_secret
+# Passphrase is created when you generate the API key (it is NOT the trading password)
+KUCOIN_API_PASSPHRASE=your_kucoin_api_passphrase
+
+# Gate.io (read-only)
+GATE_API_KEY=your_gate_api_key
+GATE_API_SECRET=your_gate_api_secret
+
+# Optional integrations
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+```
+
+**Notes:**
+- Exchange API keys are used in **read-only** mode; no live trading is executed.
+- KuCoin **passphrase** is set by you during API key creation and is required for request signatures.
 
 ## CLI Commands
 
@@ -66,6 +81,9 @@ Options:
 - `--initial-balance <number>`: Starting balance in USD (default: 10000)
 - `--max-leverage <number>`: Maximum leverage (default: 5)
 - `--mmr <number>`: Maintenance margin rate (default: 0.005)
+- `--aggressiveness <number>`: Trading aggressiveness multiplier (0.5-2.0, default: 1)
+- `--report <path>`: Inject CSV/TSV/Excel performance reports to bias risk when historical PnL is negative.
+- `--save-chart` / `--export-report pdf|json|csv` / `--no-llm` for saving charts, exporting reports, and skipping LLM output.
 
 ### 3. Analyze Real Trading Pair
 
@@ -74,6 +92,8 @@ npm start analyze-pair -- --exchange kucoin --symbol TON/USDT --timeframe 15m --
 ```
 
 Requires exchange API keys configured in `.env`.
+- `--since YYYY-MM-DD` or `--months N` fetch multi-month OHLCV via paginated requests; `--no-cache` bypasses cached candles.
+- Indicators now include OBV/VWAP/funding rate and are shown in the console output.
 
 ### 4. Analyze Portfolio
 
@@ -88,6 +108,20 @@ Aggregates balances from configured exchanges.
 ```bash
 npm start analyze-news -- --symbol TON
 ```
+
+## Report Analysis
+Supply CSV/TSV/Excel reports containing `day`, `spent`, `voucherIncome`, and `profit` columns. The assistant aggregates totals and adjusts strategy confidence when losses dominate.
+
+## LLM Integration
+The LLM layer prefers **DeepSeek** when `DEEPSEEK_API_KEY` is present (base URL `https://api.deepseek.com/v1`, default model `deepseek-chat`), otherwise it falls back to OpenAI via `OPENAI_API_KEY`. Use `--no-llm` to disable prompts. Outputs are scenario-based (conservative/moderate/aggressive) and avoid direct buy/sell instructions.
+
+## Historical Data & Funding
+`analyze-pair` supports long lookbacks via `--since` or `--months`, invoking paginated `fetchFullOHLCV`. For perpetual pairs on sub-daily timeframes, funding rates are fetched and shown alongside OBV and VWAP.
+
+## New Indicators & Strategies
+OBV, VWAP, funding-rate-aware scoring, and volume/funding/multi-timeframe strategies are available. Strategy weights are combined to derive the aggregate signal.
+
+> KuCoin API passphrase is the user-defined phrase set during API key creation (not the trading password).
 
 ## Architecture
 

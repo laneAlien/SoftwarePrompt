@@ -176,5 +176,21 @@ function buildNewsAnalysisPrompt(input: LlmAnalysisInput): string {
 }
 
 function buildSimulationAnalysisPrompt(input: LlmAnalysisInput): string {
-  return 'Analyze simulation results and provide insights on performance and risk management.';
+  const parts = ['Simulation Results:'];
+  if (input.simulation) {
+    parts.push(`PnL: ${input.simulation.pnl.toFixed(2)}`);
+    parts.push(`Trades: ${input.simulation.trades}`);
+    parts.push(`Liquidations: ${input.simulation.liquidations}`);
+    if (typeof input.simulation.maxDrawdownPercent === 'number') {
+      parts.push(`Max Drawdown: ${input.simulation.maxDrawdownPercent.toFixed(2)}%`);
+    }
+  }
+  if (input.reportSummary) {
+    parts.push('\nExternal Report Summary:');
+    parts.push(`Total Spent: ${input.reportSummary.totalSpent}`);
+    parts.push(`Total Voucher Income: ${input.reportSummary.totalVoucherIncome}`);
+    parts.push(`Total Profit: ${input.reportSummary.totalProfit}`);
+  }
+  parts.push('\nProvide a concise performance review with conservative, moderate, and aggressive scenarios without direct buy/sell calls.');
+  return parts.join('\n');
 }
