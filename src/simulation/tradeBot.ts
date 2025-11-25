@@ -4,7 +4,9 @@ import { SimulationReport, buildSimulationReport } from './reporter';
 import { computeIndicators } from '../indicators';
 import { runAllStrategies, combineSignals } from '../strategies';
 import { LlmClient, RiskLevel, StrategyContext, CombinedSignal } from '../core/types';
+import { ReportSummary } from '../reports/reportParser';
 import { determineRiskLevel } from '../real/liquidationRisk';
+import { adjustAggressiveness, calculateMaxDrawdown, estimateVolatility } from '../real/riskManagement';
 
 export interface TradeBotConfig {
   symbol: string;
@@ -13,6 +15,8 @@ export interface TradeBotConfig {
   maxLeverage: number;
   mmr: number;
   historyWindow: number;
+  aggressiveness: number;
+  reportSummary?: ReportSummary;
 }
 
 export interface SimulationTradeDecision {
@@ -32,6 +36,7 @@ export class TradeBot {
   private liquidationsCount = 0;
   private maxDrawdownPercent = 0;
   private peakBalance: number;
+  private dynamicAggressiveness: number;
 
   constructor(
     config: TradeBotConfig,
@@ -44,6 +49,7 @@ export class TradeBot {
     this.execution = execution;
     this.llmClient = llmClient;
     this.peakBalance = config.initialBalanceUsd;
+    this.dynamicAggressiveness = config.aggressiveness;
   }
 
   async runSimulation(): Promise<SimulationReport> {
@@ -68,10 +74,21 @@ export class TradeBot {
         indicators,
         currentPrice: marketState.currentPrice,
         position: null,
+        reportSummary: this.config.reportSummary,
       };
 
       const signals = runAllStrategies(strategyContext);
       const combinedSignal = combineSignals(signals);
+
+      const metrics = {
+        maxDrawdownPercent: calculateMaxDrawdown(marketState.recentCandles),
+        volatility: estimateVolatility(marketState.recentCandles),
+      };
+      this.dynamicAggressiveness = adjustAggressiveness(
+        this.config.aggressiveness,
+        metrics,
+        indicators.fundingRate
+      );
 
       const riskSnapshot = this.assessRisk(marketState.currentPrice);
 
@@ -142,6 +159,23 @@ export class TradeBot {
     return map[level];
   }
 
+  private getOpenThreshold(): number {
+    const baseThreshold = 0.65;
+    const adjustment = (this.dynamicAggressiveness - 1) * 0.2;
+    return Math.max(0.35, baseThreshold - adjustment);
+  }
+
+  private getSizeFraction(): number {
+    const baseSize = 0.08;
+    const adjustment = (this.dynamicAggressiveness - 1) * 0.05;
+    return Math.min(0.25, Math.max(0.02, baseSize + adjustment));
+  }
+
+  private getLeverage(): number {
+    const baseLeverage = 1 + (this.dynamicAggressiveness - 1) * 1.5;
+    return Math.min(this.config.maxLeverage, Math.max(1, baseLeverage));
+  }
+
   private makeDecision(
     combinedSignal: CombinedSignal,
     riskLevel: RiskLevel,
@@ -158,14 +192,16 @@ export class TradeBot {
 
     if (positions.length > 0) {
       const position = positions[0];
+
+      const closeThreshold = this.getOpenThreshold() * 0.7;
       const shouldClose =
-        (position.side === 'long' && combinedSignal.action === 'sell' && combinedSignal.scoreSell > 0.6) ||
-        (position.side === 'short' && combinedSignal.action === 'buy' && combinedSignal.scoreBuy > 0.6);
+        (position.side === 'long' && combinedSignal.scoreSell - combinedSignal.scoreBuy > closeThreshold) ||
+        (position.side === 'short' && combinedSignal.scoreBuy - combinedSignal.scoreSell > closeThreshold);
 
       if (shouldClose) {
         return {
           action: 'close',
-          reason: `Closing ${position.side} position due to opposite signal`,
+          reason: `Closing ${position.side} position due to strengthening opposite signal`,
         };
       }
 
@@ -175,19 +211,25 @@ export class TradeBot {
       };
     }
 
-    if (combinedSignal.action === 'buy' && combinedSignal.scoreBuy > 0.7) {
+    const openThreshold = this.getOpenThreshold();
+    const longBias = combinedSignal.scoreBuy - combinedSignal.scoreSell;
+    const shortBias = combinedSignal.scoreSell - combinedSignal.scoreBuy;
+    const sizeFraction = this.getSizeFraction();
+    const leverage = this.getLeverage();
+
+    if (longBias > openThreshold) {
       return {
         action: 'open-long',
-        sizeFraction: 0.1,
-        leverage: Math.min(3, this.config.maxLeverage),
-        reason: `Strong buy signal (score: ${combinedSignal.scoreBuy.toFixed(2)})`,
+        sizeFraction,
+        leverage,
+        reason: `Buy bias ${longBias.toFixed(2)} (threshold ${openThreshold.toFixed(2)})`,
       };
-    } else if (combinedSignal.action === 'sell' && combinedSignal.scoreSell > 0.7) {
+    } else if (shortBias > openThreshold) {
       return {
         action: 'open-short',
-        sizeFraction: 0.1,
-        leverage: Math.min(3, this.config.maxLeverage),
-        reason: `Strong sell signal (score: ${combinedSignal.scoreSell.toFixed(2)})`,
+        sizeFraction,
+        leverage,
+        reason: `Sell bias ${shortBias.toFixed(2)} (threshold ${openThreshold.toFixed(2)})`,
       };
     }
 

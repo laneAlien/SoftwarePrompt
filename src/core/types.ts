@@ -102,6 +102,9 @@ export interface IndicatorSet {
   emaSlow?: number;
   sma?: number;
   bollinger?: BollingerBands;
+  obv?: number;
+  vwap?: number;
+  fundingRate?: number;
 }
 
 export type StrategySignalStrength = 'weak' | 'medium' | 'strong';
@@ -122,6 +125,8 @@ export interface StrategyContext {
   indicators: IndicatorSet;
   currentPrice: number;
   position: Position | null;
+  reportSummary?: import('../reports/reportParser').ReportSummary;
+  fundingRate?: number;
 }
 
 export interface CombinedSignal {
@@ -168,6 +173,13 @@ export interface LlmAnalysisInput {
   portfolioSummary?: PortfolioSummary;
   news?: NewsItem[];
   riskSnapshot?: RiskSnapshot;
+  reportSummary?: import('../reports/reportParser').ReportSummary;
+  simulation?: {
+    pnl: number;
+    trades: number;
+    liquidations: number;
+    maxDrawdownPercent?: number;
+  };
 }
 
 export interface LlmAnalysisOutput {
