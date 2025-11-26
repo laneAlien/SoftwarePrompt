@@ -1,8 +1,10 @@
 export interface SimulationReport {
-  finalBalance: number;
   initialBalance: number;
-  tradesCount: number;
-  liquidationsCount: number;
+  finalBalance: number;
+  pnl: number;
+  pnlPercent: number;
+  trades: number;
+  liquidations: number;
   maxDrawdownPercent: number;
   log: string[];
 }
@@ -15,20 +17,21 @@ export function buildSimulationReport(
   maxDrawdownPercent: number,
   log: string[]
 ): SimulationReport {
+  const pnl = finalBalance - initialBalance;
+  const pnlPercent = initialBalance > 0 ? (pnl / initialBalance) * 100 : 0;
   return {
-    finalBalance,
     initialBalance,
-    tradesCount,
-    liquidationsCount,
+    finalBalance,
+    pnl,
+    pnlPercent,
+    trades: tradesCount,
+    liquidations: liquidationsCount,
     maxDrawdownPercent,
     log,
   };
 }
 
 export function formatSimulationReport(report: SimulationReport): string {
-  const pnl = report.finalBalance - report.initialBalance;
-  const pnlPercent = ((pnl / report.initialBalance) * 100).toFixed(2);
-  
   const lines = [
     '═'.repeat(60),
     'SIMULATION REPORT',
@@ -36,9 +39,9 @@ export function formatSimulationReport(report: SimulationReport): string {
     '',
     `Initial Balance:     $${report.initialBalance.toFixed(2)}`,
     `Final Balance:       $${report.finalBalance.toFixed(2)}`,
-    `PnL:                 $${pnl.toFixed(2)} (${pnlPercent}%)`,
-    `Total Trades:        ${report.tradesCount}`,
-    `Liquidations:        ${report.liquidationsCount}`,
+    `PnL:                 $${report.pnl.toFixed(2)} (${report.pnlPercent.toFixed(2)}%)`,
+    `Total Trades:        ${report.trades}`,
+    `Liquidations:        ${report.liquidations}`,
     `Max Drawdown:        ${report.maxDrawdownPercent.toFixed(2)}%`,
     '',
     '─'.repeat(60),

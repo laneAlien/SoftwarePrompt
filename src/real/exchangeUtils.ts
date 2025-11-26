@@ -1,4 +1,4 @@
-import ccxt from 'ccxt';
+import type { Exchange, OHLCV } from 'ccxt';
 
 export interface RetryOptions {
   retries?: number;
@@ -41,18 +41,18 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
   }
 }
 
-export function createExchangeOptions(overrides?: Partial<ccxt.Exchange>) {
+export function createExchangeOptions(overrides?: Partial<Exchange>) {
   return {
     timeout: 30000,
     enableRateLimit: false,
     ...overrides,
-  } as ccxt.Exchange;
+  } as any;
 }
 
 const ohlcvCache = new Map<string, any[]>();
 
 export async function fetchFullOHLCV(
-  exchange: ccxt.Exchange,
+  exchange: Exchange,
   symbol: string,
   timeframe: string,
   since: number,
@@ -69,7 +69,7 @@ export async function fetchFullOHLCV(
   const all: any[] = [];
 
   while (fetchSince < to) {
-    const batch = await withRetry(() => exchange.fetchOHLCV(symbol, timeframe, fetchSince, limit));
+    const batch = (await withRetry(() => exchange.fetchOHLCV(symbol, timeframe, fetchSince, limit))) as OHLCV[];
     if (!batch.length) break;
     all.push(...batch);
     const lastTimestamp = batch[batch.length - 1][0];

@@ -11,7 +11,6 @@ import { computeIndicators } from '../indicators';
 import { runAllStrategies, combineSignals } from '../strategies';
 import { OpenAILlmClient } from '../llm/llmClient';
 import { aggregateNews } from '../news/aggregator';
-import { fetchNews } from '../news/newsFetcher';
 import { parseReport } from '../reports/reportParser';
 import { renderAsciiChart, renderChartPNG } from './charts';
 import { exportReport } from '../reports/reportGenerator';
@@ -105,16 +104,15 @@ program
         symbol: options.symbol,
         timeframe: options.timeframe,
         initialBalanceUsd: parseFloat(options.initialBalance),
-      maxLeverage: parseFloat(options.maxLeverage),
-      mmr: parseFloat(options.mmr),
-      historyWindow: parseInt(options.historyWindow),
-      aggressiveness: parseFloat(options.aggressiveness),
-      reportSummary,
-    },
-    simulator,
-    execution,
-    llmClient
-  );
+        maxLeverage: parseFloat(options.maxLeverage),
+        mmr: parseFloat(options.mmr),
+        historyWindow: parseInt(options.historyWindow),
+        aggressiveness: parseFloat(options.aggressiveness),
+        reportSummary,
+      },
+      simulator,
+      execution
+    );
 
     const report = await bot.runSimulation();
     console.log('\n' + formatSimulationReport(report));
@@ -139,7 +137,7 @@ program
             pnl: report.pnl,
             trades: report.trades,
             liquidations: report.liquidations,
-            maxDrawdownPercent: report.maxDrawdown,
+            maxDrawdownPercent: report.maxDrawdownPercent,
           },
           reportSummary,
         },
@@ -308,7 +306,7 @@ program
       console.log(`Found ${news.length} items:\n`);
       news.forEach((item) => {
         console.log(`${item.title}`);
-        console.log(`  Sentiment: ${item.sentiment} | Source: ${item.source} | Link: ${item.link}`);
+        console.log(`  Sentiment: ${item.sentiment} | Source: ${item.source} | Link: ${item.rawLink ?? 'n/a'}`);
       });
 
       if (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY) {

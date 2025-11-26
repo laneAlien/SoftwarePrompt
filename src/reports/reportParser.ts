@@ -64,8 +64,8 @@ function readExcel(filePath: string): ReportRow[] {
   const workbook = xlsx.readFile(filePath);
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
-  const json = xlsx.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
-  return json.map((record) => {
+  const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, any>[];
+  return json.map((record: Record<string, any>) => {
     const headers = normalizeHeaders(Object.keys(record));
     const values = Object.values(record);
     const lookup = (keyVariants: string[]): number => {

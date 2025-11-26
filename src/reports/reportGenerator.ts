@@ -17,10 +17,17 @@ export function exportReport(report: SimulationReport, options: ExportOptions): 
   }
 
   if (options.format === 'csv') {
-    const rows = report.orders
-      .map((o) => `${o.timestamp},${o.side},${o.price},${o.size},${o.pnl}`)
-      .join('\n');
-    fs.writeFileSync(target, `timestamp,side,price,size,pnl\n${rows}`);
+    const rows = [
+      'metric,value',
+      `initial_balance,${report.initialBalance}`,
+      `final_balance,${report.finalBalance}`,
+      `pnl,${report.pnl}`,
+      `pnl_percent,${report.pnlPercent}`,
+      `trades,${report.trades}`,
+      `liquidations,${report.liquidations}`,
+      `max_drawdown_percent,${report.maxDrawdownPercent}`,
+    ].join('\n');
+    fs.writeFileSync(target, rows);
     return target;
   }
 
@@ -28,15 +35,15 @@ export function exportReport(report: SimulationReport, options: ExportOptions): 
   doc.pipe(fs.createWriteStream(target));
   doc.fontSize(16).text('Simulation Report', { underline: true });
   doc.moveDown();
-  doc.fontSize(12).text(`Symbol: ${report.symbol}`);
-  doc.text(`Timeframe: ${report.timeframe}`);
-  doc.text(`Final Balance: ${report.finalBalanceUsd.toFixed(2)} USD`);
-  doc.text(`PnL: ${report.pnlUsd.toFixed(2)} USD`);
+  doc.fontSize(12).text(`Initial Balance: $${report.initialBalance.toFixed(2)}`);
+  doc.text(`Final Balance:   $${report.finalBalance.toFixed(2)}`);
+  doc.text(`PnL:             $${report.pnl.toFixed(2)} (${report.pnlPercent.toFixed(2)}%)`);
+  doc.text(`Trades:          ${report.trades}`);
+  doc.text(`Liquidations:    ${report.liquidations}`);
+  doc.text(`Max Drawdown:    ${report.maxDrawdownPercent.toFixed(2)}%`);
   doc.moveDown();
-  doc.text('Orders:');
-  report.orders.slice(-20).forEach((o) => {
-    doc.text(`${new Date(o.timestamp).toISOString()} | ${o.side} | ${o.price} | size ${o.size} | pnl ${o.pnl}`);
-  });
+  doc.text('Recent Log Entries:');
+  report.log.slice(-10).forEach((entry) => doc.text(entry));
   doc.end();
   return target;
 }

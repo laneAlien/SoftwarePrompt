@@ -1,4 +1,4 @@
-import ccxt from 'ccxt';
+import type { Exchange } from 'ccxt';
 
 export interface FundingRateResult {
   rate: number;
@@ -7,7 +7,7 @@ export interface FundingRateResult {
 }
 
 export async function fetchFundingRate(
-  exchange: ccxt.Exchange,
+  exchange: Exchange,
   symbol: string
 ): Promise<FundingRateResult | null> {
   if (typeof exchange.fetchFundingRate !== 'function') {

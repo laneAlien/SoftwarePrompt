@@ -3,7 +3,7 @@ import { OrderExecutionEngine } from './orderExecution';
 import { SimulationReport, buildSimulationReport } from './reporter';
 import { computeIndicators } from '../indicators';
 import { runAllStrategies, combineSignals } from '../strategies';
-import { LlmClient, RiskLevel, StrategyContext, CombinedSignal } from '../core/types';
+import { RiskLevel, StrategyContext, CombinedSignal } from '../core/types';
 import { ReportSummary } from '../reports/reportParser';
 import { determineRiskLevel } from '../real/liquidationRisk';
 import { adjustAggressiveness, calculateMaxDrawdown, estimateVolatility } from '../real/riskManagement';
@@ -30,7 +30,6 @@ export class TradeBot {
   private config: TradeBotConfig;
   private simulator: MarketSimulator;
   private execution: OrderExecutionEngine;
-  private llmClient?: LlmClient;
   private log: string[] = [];
   private tradesCount = 0;
   private liquidationsCount = 0;
@@ -38,16 +37,10 @@ export class TradeBot {
   private peakBalance: number;
   private dynamicAggressiveness: number;
 
-  constructor(
-    config: TradeBotConfig,
-    simulator: MarketSimulator,
-    execution: OrderExecutionEngine,
-    llmClient?: LlmClient
-  ) {
+  constructor(config: TradeBotConfig, simulator: MarketSimulator, execution: OrderExecutionEngine) {
     this.config = config;
     this.simulator = simulator;
     this.execution = execution;
-    this.llmClient = llmClient;
     this.peakBalance = config.initialBalanceUsd;
     this.dynamicAggressiveness = config.aggressiveness;
   }
@@ -92,11 +85,7 @@ export class TradeBot {
 
       const riskSnapshot = this.assessRisk(marketState.currentPrice);
 
-      const decision = this.makeDecision(
-        combinedSignal,
-        riskSnapshot.riskLevel,
-        marketState.currentPrice
-      );
+      const decision = this.makeDecision(combinedSignal, riskSnapshot.riskLevel);
 
       await this.executeDecision(decision, marketState.currentPrice, stepCount);
 
@@ -176,11 +165,7 @@ export class TradeBot {
     return Math.min(this.config.maxLeverage, Math.max(1, baseLeverage));
   }
 
-  private makeDecision(
-    combinedSignal: CombinedSignal,
-    riskLevel: RiskLevel,
-    currentPrice: number
-  ): SimulationTradeDecision {
+  private makeDecision(combinedSignal: CombinedSignal, riskLevel: RiskLevel): SimulationTradeDecision {
     const positions = this.execution.getActivePositions();
 
     if (riskLevel === 'extreme' && positions.length > 0) {

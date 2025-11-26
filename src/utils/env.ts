@@ -6,7 +6,7 @@ export function validateEnv(requiredKeys: string[] = []): void {
     );
   }
 
-  const warnEmpty = ['GATE_API_KEY', 'GATE_API_SECRET', 'DEEPSEEK_API_KEY'];
+  const warnEmpty = ['GATE_API_KEY', 'GATE_API_SECRET', 'DEEPSEEK_API_KEY', 'OPENAI_API_KEY'];
   for (const key of warnEmpty) {
     if (key in process.env && !process.env[key]) {
       console.warn(`${key} is defined but empty. Please populate it to enable the related integration.`);

@@ -1,11 +1,12 @@
 import ccxt from 'ccxt';
+import type { Balances, Exchange, OHLCV, Ticker } from 'ccxt';
 import { ExchangeClient } from './exchangeBase';
 import { Candle, PortfolioAsset } from '../core/types';
 import { createExchangeOptions, withRetry, fetchFullOHLCV } from './exchangeUtils';
 
 export class KucoinClient implements ExchangeClient {
   name = 'kucoin';
-  private exchange: ccxt.kucoin;
+  private exchange: Exchange;
   private static marketsPromise?: Promise<void>;
   private static marketsLoaded = false;
   private candleCache = new Map<string, Candle[]>();
@@ -35,23 +36,23 @@ export class KucoinClient implements ExchangeClient {
     if (cached && !options.skipCache) return cached;
 
     try {
-      let ohlcv: any[];
+      let ohlcv: OHLCV[];
       if (since && to) {
-        ohlcv = await fetchFullOHLCV(this.exchange, symbol, timeframe, since, to, options);
+        ohlcv = (await fetchFullOHLCV(this.exchange, symbol, timeframe, since, to, options)) as OHLCV[];
       } else {
-        ohlcv = await withRetry(() => this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit), {
+        ohlcv = (await withRetry(() => this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit), {
           onRetry: (attempt, error) =>
             console.warn(`KuCoin fetchOHLCV retry ${attempt}/${3}:`, (error as Error).message || error),
-        });
+        })) as OHLCV[];
       }
 
       const candles = ohlcv.map((candle) => ({
-        timestamp: candle[0],
-        open: candle[1],
-        high: candle[2],
-        low: candle[3],
-        close: candle[4],
-        volume: candle[5],
+        timestamp: Number(candle[0]),
+        open: Number(candle[1]),
+        high: Number(candle[2]),
+        low: Number(candle[3]),
+        close: Number(candle[4]),
+        volume: Number(candle[5]),
         timeframe,
         symbol,
       }));
@@ -68,10 +69,10 @@ export class KucoinClient implements ExchangeClient {
   async fetchBalance(): Promise<PortfolioAsset[]> {
     await this.ensureMarkets();
 
-    const balance = await withRetry(() => this.exchange.fetchBalance(), {
+    const balance = (await withRetry(() => this.exchange.fetchBalance(), {
       onRetry: (attempt, error) =>
         console.warn(`KuCoin fetchBalance retry ${attempt}/${3}:`, (error as Error).message || error),
-    });
+    })) as Balances;
     const assets: PortfolioAsset[] = [];
 
     for (const [currency, amount] of Object.entries(balance.total)) {
@@ -91,10 +92,10 @@ export class KucoinClient implements ExchangeClient {
   async getCurrentPrice(symbol: string): Promise<number> {
     await this.ensureMarkets();
 
-    const ticker = await withRetry(() => this.exchange.fetchTicker(symbol), {
+    const ticker = (await withRetry(() => this.exchange.fetchTicker(symbol), {
       onRetry: (attempt, error) =>
         console.warn(`KuCoin fetchTicker retry ${attempt}/${3}:`, (error as Error).message || error),
-    });
+    })) as Ticker;
     return ticker.last || 0;
   }
 
@@ -105,7 +106,7 @@ export class KucoinClient implements ExchangeClient {
         .then(() => {
           KucoinClient.marketsLoaded = true;
         })
-        .catch((error) => {
+        .catch((error: unknown) => {
           KucoinClient.marketsLoaded = false;
           throw error;
         });
