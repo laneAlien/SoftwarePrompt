@@ -11,8 +11,7 @@ export interface FeeModel {
 }
 
 export function calculateFee(
-    amount: number,
-    price: number,
+    notional: number,
     isMaker: boolean,
     model: FeeModel
 ): number {
