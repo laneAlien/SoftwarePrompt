@@ -1,34 +1,48 @@
 import 'dotenv/config';
-import { runCLI } from './ui/cli';
-import { startTelegramBot } from './ui/telegramBot';
+import { Command } from 'commander';
+import { fetchOHLCV } from './real/ohlcv';
+import { detectRegime } from './core/regime';
+import { importLedger } from './core/importLedger';
 
-console.log('╔═══════════════════════════════════════════════════════════╗');
-console.log('║   Crypto Trading AI Assistant v1.0.0                     ║');
-console.log('║   Educational & Analytical Tool - Not Financial Advice    ║');
-console.log('╚═══════════════════════════════════════════════════════════╝');
-console.log('');
+const program = new Command();
 
-if (process.argv.length === 2) {
-  console.log('Usage: npm start <command> [options]');
-  console.log('');
-  console.log('Available commands:');
-  console.log('  simulate         - Generate and analyze artificial market data');
-  console.log('  trade-sim        - Run AI trading bot simulation');
-  console.log('  analyze-pair     - Analyze real trading pair from exchange');
-  console.log('  analyze-portfolio - Analyze portfolio across exchanges');
-  console.log('  analyze-news     - Analyze crypto news and signals');
-  console.log('');
-  console.log('Examples:');
-  console.log('  npm start simulate -- --symbol TONUSDT --timeframe 15m --candles 500 --initial-price 2.5');
-  console.log('  npm start trade-sim -- --symbol TONUSDT --timeframe 15m --candles 1000 --initial-price 2.5');
-  console.log('  npm start analyze-news -- --symbol TON');
-  console.log('');
-  console.log('For detailed help: npm start <command> -- --help');
-  console.log('');
-  
-  if (process.env.TELEGRAM_BOT_TOKEN) {
-    startTelegramBot();
-  }
-} else {
-  runCLI();
-}
+program
+  .command('fetch-ohlcv')
+  .option('--exchange <exchange>', 'Exchange ID', 'gate')
+  .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
+  .option('--timeframe <timeframe>', 'Timeframe', '1m')
+  .option('--since <since>', 'Start date (ISO)', '2025-12-12')
+  .action(async (options) => {
+    try {
+      const data = await fetchOHLCV(options.exchange, options.symbol, options.timeframe, options.since);
+      console.log(`Fetched ${data.length} candles.`);
+    } catch (error) {
+      console.error('Error fetching OHLCV:', error);
+    }
+  });
+
+program
+  .command('analyze-regime')
+  .option('--exchange <exchange>', 'Exchange ID', 'gate')
+  .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
+  .action(async (options) => {
+      // Mock data for now to demonstrate logic
+      const prices = Array.from({length: 50}, () => Math.random() * 100);
+      const regime = detectRegime(prices);
+      console.log(`Current regime for ${options.symbol}: ${regime}`);
+  });
+
+program
+  .command('import-ledger')
+  .argument('<file>', 'Path to CSV file')
+  .action((file) => {
+      try {
+        const entries = importLedger(file);
+        console.log(`Imported ${entries.length} entries from ledger.`);
+        console.log('First entry:', entries[0]);
+      } catch (error) {
+        console.error('Error importing ledger:', error);
+      }
+  });
+
+program.parse(process.argv);
