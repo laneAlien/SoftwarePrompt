@@ -4,62 +4,55 @@ import { parse } from 'csv-parse/sync';
 export interface LedgerEntry {
     time: string;
     action: string;
+    actionType: LedgerActionType;
+    side?: TradeSide;
     amount: number;
     currency: string;
     fee?: number;
     feeCurrency?: string;
-    side?: 'buy' | 'sell';
-    price?: number;
-    amountBase?: number;
-    amountQuote?: number;
-    pair?: string;
-    raw: Record<string, string>;
+    tradeId?: string;
 }
 
-export interface LedgerMetrics {
+export type LedgerActionType = 'trade' | 'fee' | 'transfer' | 'other';
+export type TradeSide = 'buy' | 'sell';
+
+export interface LedgerSummary {
+    tradesCount: number;
     realizedPnl: number;
-    feesTotal: number;
-    feesByCurrency: Record<string, number>;
     turnover: number;
     avgProfitPerTrade: number;
     feeRatio: number;
-    tradesCount: number;
     tradesPerHour: number;
-    startTime?: string;
-    endTime?: string;
+    feesByCurrency: Record<string, number>;
+    startTime: Date | null;
+    endTime: Date | null;
 }
 
-export interface LedgerMetricsOptions {
-    quoteCurrency?: string;
-    gtPrice?: number;
+const STABLE_QUOTES = new Set(['USDT', 'USDC', 'USD', 'BUSD', 'DAI', 'TUSD']);
+
+function normalizeAction(actionDesc: string): { actionType: LedgerActionType; side?: TradeSide } {
+    const normalized = actionDesc.toLowerCase();
+    if (normalized.includes('комисс') || normalized.includes('commission') || normalized.includes('fee')) {
+        return { actionType: 'fee' };
+    }
+    if (normalized.includes('куп') || normalized.includes('buy')) {
+        return { actionType: 'trade', side: 'buy' };
+    }
+    if (normalized.includes('продаж') || normalized.includes('sell')) {
+        return { actionType: 'trade', side: 'sell' };
+    }
+    if (normalized.includes('deposit') || normalized.includes('withdraw') || normalized.includes('transfer')) {
+        return { actionType: 'transfer' };
+    }
+    return { actionType: 'other' };
 }
 
-function parseAmountCurrency(value: string): { amount: number; currency: string } | null {
-    const match = value.match(/([-\d.]+)\s*([A-Za-z0-9]+)/);
-    if (!match) return null;
+function parseAmount(changeStr: string): { amount: number; currency: string } {
+    const amountMatch = changeStr.match(/([-\d.]+)\s*([A-Za-z]+)/);
     return {
-        amount: parseFloat(match[1]),
-        currency: match[2],
+        amount: amountMatch ? parseFloat(amountMatch[1]) : 0,
+        currency: amountMatch ? amountMatch[2] : ''
     };
-}
-
-function parseNumber(value: string | undefined): number | undefined {
-    if (!value) return undefined;
-    const parsed = parseFloat(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function detectSide(action: string, raw: Record<string, string>): 'buy' | 'sell' | undefined {
-    const side = raw.side?.toLowerCase();
-    if (side === 'buy' || side === 'sell') return side;
-    const actionLower = action.toLowerCase();
-    if (actionLower.includes('buy')) return 'buy';
-    if (actionLower.includes('sell')) return 'sell';
-    return undefined;
-}
-
-function detectPair(raw: Record<string, string>): string | undefined {
-    return raw.currency_pair || raw.symbol || raw.pair || raw.market;
 }
 
 export function importLedger(filePath: string): LedgerEntry[] {
@@ -69,107 +62,128 @@ export function importLedger(filePath: string): LedgerEntry[] {
         skip_empty_lines: true,
         delimiter: ',',
         trim: true,
+        bom: true,
+        relax_column_count: true
     });
 
-    return records.map((record: Record<string, string>) => {
-        const changeStr = record.change_amount || record.change || '';
-        const amountMatch = parseAmountCurrency(changeStr);
-        const feeMatch = record.fee ? parseAmountCurrency(record.fee) : null;
-        const price = parseNumber(record.price || record.trade_price);
-        const amountBase = parseNumber(record.amount || record.trade_amount || record.quantity);
-        const amountQuote = parseNumber(record.total || record.quote_amount);
-        const action = record.action_desc || record.action || record.type || '';
-
+    return records.map((r: any) => {
+        const changeStr = r.change_amount || "";
+        const { amount, currency } = parseAmount(changeStr);
+        const actionDesc = (r.action_desc || '').toString().trim();
+        const normalized = normalizeAction(actionDesc);
         return {
-            time: record.time || record.created || record.timestamp || '',
-            action,
-            amount: amountMatch?.amount ?? 0,
-            currency: amountMatch?.currency ?? '',
-            fee: feeMatch?.amount,
-            feeCurrency: feeMatch?.currency,
-            side: detectSide(action, record),
-            price,
-            amountBase,
-            amountQuote,
-            pair: detectPair(record),
-            raw: record,
+            time: r.time,
+            action: actionDesc,
+            actionType: normalized.actionType,
+            side: normalized.side,
+            amount,
+            currency,
+            tradeId: r.action_data ? r.action_data.toString().trim() : undefined
         };
     });
 }
 
-export function calculateLedgerMetrics(entries: LedgerEntry[], options: LedgerMetricsOptions = {}): LedgerMetrics {
-    const quoteCurrency = options.quoteCurrency ?? 'USDT';
-    const gtPrice = options.gtPrice ?? 0;
+export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
+    const tradeGroups = new Map<string, LedgerEntry[]>();
     const feesByCurrency: Record<string, number> = {};
-    let feesTotal = 0;
-    let turnover = 0;
-    let realizedPnl = 0;
-    let tradesCount = 0;
+    const tradeTimes: number[] = [];
 
-    const positions = new Map<string, { baseQty: number; avgCost: number }>();
-
-    const sortedEntries = [...entries].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
-    const startTime = sortedEntries[0]?.time;
-    const endTime = sortedEntries[sortedEntries.length - 1]?.time;
-
-    for (const entry of sortedEntries) {
-        const isTrade = entry.side && (entry.amountBase || entry.amountQuote || entry.price);
-        if (entry.fee && entry.feeCurrency) {
-            feesByCurrency[entry.feeCurrency] = (feesByCurrency[entry.feeCurrency] ?? 0) + entry.fee;
-            if (entry.feeCurrency === quoteCurrency) {
-                feesTotal += entry.fee;
-            } else if (entry.feeCurrency === 'GT' && gtPrice > 0) {
-                feesTotal += entry.fee * gtPrice;
+    entries.forEach((entry, index) => {
+        if (entry.actionType === 'fee') {
+            const feeValue = Math.abs(entry.amount);
+            if (!feesByCurrency[entry.currency]) {
+                feesByCurrency[entry.currency] = 0;
             }
+            feesByCurrency[entry.currency] += feeValue;
+            return;
         }
+        if (entry.actionType !== 'trade') {
+            return;
+        }
+        const key = entry.tradeId || `trade-${index}`;
+        if (!tradeGroups.has(key)) {
+            tradeGroups.set(key, []);
+        }
+        tradeGroups.get(key)?.push(entry);
+    });
 
-        if (!isTrade || !entry.side || !entry.pair) {
+    const positionByAsset = new Map<string, { qty: number; cost: number }>();
+    let realizedPnl = 0;
+    let turnover = 0;
+
+    for (const group of tradeGroups.values()) {
+        const totals = new Map<string, number>();
+        for (const entry of group) {
+            totals.set(entry.currency, (totals.get(entry.currency) || 0) + entry.amount);
+        }
+        const currencies = Array.from(totals.keys()).filter((currency) => totals.get(currency));
+        if (currencies.length < 2) {
             continue;
         }
 
-        const price = entry.price ?? (entry.amountQuote && entry.amountBase ? entry.amountQuote / entry.amountBase : undefined);
-        if (!price) continue;
-
-        const baseQty = entry.amountBase ?? (entry.amountQuote ? entry.amountQuote / price : undefined);
-        if (!baseQty) continue;
-
-        const notional = entry.amountQuote ?? baseQty * price;
-        turnover += Math.abs(notional);
-        tradesCount += 1;
-
-        const position = positions.get(entry.pair) ?? { baseQty: 0, avgCost: 0 };
-
-        if (entry.side === 'buy') {
-            const newQty = position.baseQty + baseQty;
-            const cost = Math.abs(notional);
-            position.avgCost = newQty > 0 ? (position.avgCost * position.baseQty + cost) / newQty : 0;
-            position.baseQty = newQty;
-        } else {
-            const pnl = (price - position.avgCost) * baseQty;
-            realizedPnl += pnl;
-            position.baseQty = Math.max(0, position.baseQty - baseQty);
-            if (position.baseQty === 0) {
-                position.avgCost = 0;
-            }
+        const quoteCurrency = currencies.find((currency) => STABLE_QUOTES.has(currency));
+        if (!quoteCurrency) {
+            continue;
         }
 
-        positions.set(entry.pair, position);
+        const baseCurrency = currencies.find((currency) => currency !== quoteCurrency);
+        if (!baseCurrency) {
+            continue;
+        }
+
+        const baseDelta = totals.get(baseCurrency) || 0;
+        const quoteDelta = totals.get(quoteCurrency) || 0;
+        turnover += Math.abs(quoteDelta);
+
+        const tradeTime = Date.parse(group[0].time);
+        if (!Number.isNaN(tradeTime)) {
+            tradeTimes.push(tradeTime);
+        }
+
+        if (!positionByAsset.has(baseCurrency)) {
+            positionByAsset.set(baseCurrency, { qty: 0, cost: 0 });
+        }
+        const position = positionByAsset.get(baseCurrency)!;
+
+        if (baseDelta > 0) {
+            const cost = Math.abs(quoteDelta);
+            position.qty += baseDelta;
+            position.cost += cost;
+        } else if (baseDelta < 0) {
+            const sellQty = Math.abs(baseDelta);
+            const proceeds = Math.abs(quoteDelta);
+            const avgCost = position.qty > 0 ? position.cost / position.qty : 0;
+            realizedPnl += proceeds - avgCost * sellQty;
+            position.qty = Math.max(0, position.qty - sellQty);
+            position.cost = Math.max(0, position.cost - avgCost * sellQty);
+        }
     }
 
-    const durationHours = startTime && endTime
-        ? Math.max(0.0001, (new Date(endTime).getTime() - new Date(startTime).getTime()) / 3600000)
-        : 0;
+    const tradesCount = tradeGroups.size;
+    const startTime = tradeTimes.length ? new Date(Math.min(...tradeTimes)) : null;
+    const endTime = tradeTimes.length ? new Date(Math.max(...tradeTimes)) : null;
+    const hours = startTime && endTime ? Math.max((endTime.getTime() - startTime.getTime()) / 3600000, 0) : 0;
+    const tradesPerHour = hours > 0 ? tradesCount / hours : tradesCount;
+
+    const totalFeesInQuote = Object.entries(feesByCurrency).reduce((sum, [currency, amount]) => {
+        if (STABLE_QUOTES.has(currency)) {
+            return sum + amount;
+        }
+        return sum;
+    }, 0);
+
+    const avgProfitPerTrade = tradesCount > 0 ? realizedPnl / tradesCount : 0;
+    const feeRatio = turnover > 0 ? totalFeesInQuote / turnover : 0;
 
     return {
-        realizedPnl,
-        feesTotal,
-        feesByCurrency,
-        turnover,
-        avgProfitPerTrade: tradesCount > 0 ? realizedPnl / tradesCount : 0,
-        feeRatio: turnover > 0 ? feesTotal / turnover : 0,
         tradesCount,
-        tradesPerHour: durationHours > 0 ? tradesCount / durationHours : 0,
+        realizedPnl,
+        turnover,
+        avgProfitPerTrade,
+        feeRatio,
+        tradesPerHour,
+        feesByCurrency,
         startTime,
-        endTime,
+        endTime
     };
 }
