@@ -13,11 +13,16 @@ program
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
   .option('--since <since>', 'Start date (ISO)', '2025-12-12')
+  .option('--until <until>', 'End date (ISO)')
   .option('--limit <limit>', 'Max candles', '1000')
+  .option('--rebuild', 'Rebuild cache', false)
   .action(async (options) => {
     try {
       const limit = parseInt(options.limit, 10);
-      const data = await fetchOHLCV(options.exchange, options.symbol, options.timeframe, options.since, limit);
+      const data = await fetchOHLCV(options.exchange, options.symbol, options.timeframe, options.since, limit, {
+        until: options.until,
+        rebuildCache: options.rebuild,
+      });
       console.log(`Fetched ${data.length} candles.`);
     } catch (error) {
       console.error('Error fetching OHLCV:', error);
@@ -28,11 +33,16 @@ program
   .command('analyze-regime')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
+  .option('--slope-window <number>', 'MA30 slope window', '5')
   .action(async (options) => {
-      // Mock data for now to demonstrate logic
-      const prices = Array.from({length: 50}, () => Math.random() * 100);
-      const regime = detectRegime(prices);
-      console.log(`Current regime for ${options.symbol}: ${regime}`);
+    const ohlcv = await fetchOHLCV(options.exchange, options.symbol, '15m', '2024-01-01', 1000);
+    const prices = ohlcv.map((candle) => candle.close);
+    const parsedSlopeWindow = Number(options.slopeWindow);
+    const slopeWindow = Number.isFinite(parsedSlopeWindow) ? parsedSlopeWindow : 5;
+    const { regime, slope, distance } = detectRegime(prices, { slopeWindow });
+    console.log(
+      `Current regime for ${options.symbol}: ${regime} | slope: ${slope.toFixed(6)} | distance: ${distance.toFixed(6)}`
+    );
   });
 
 program
