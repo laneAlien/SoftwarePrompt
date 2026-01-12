@@ -1,69 +1,42 @@
-export interface FeeModelGate {
+export interface FeeModel {
     makerRate: number;
     takerRate: number;
-    gtDiscountRate?: number;
-    voucherDiscountRate?: number;
-    voucherDiscountFixed?: number;
-    minimumFee?: number;
-    roundingStep?: number;
-}
-
-export interface FeeBreakdown {
-    feeGross: number;
-    feeNet: number;
-    discounts: {
-        gt: number;
-        voucher: number;
+    gtDiscountRate: number;
+    voucherDiscount?: {
+        type: 'percent' | 'fixed';
+        value: number;
     };
-}
-
-const DEFAULT_ROUNDING_STEP = 1e-8;
-
-function roundFee(value: number, step: number): number {
-    if (step <= 0) return value;
-    return Math.ceil(value / step) * step;
+    minimumFee: number;
+    roundingDecimals?: number;
 }
 
 export function calculateFee(
     notional: number,
     isMaker: boolean,
-    model: FeeModelGate
-): FeeBreakdown {
+    model: FeeModel
+): number {
     const rate = isMaker ? model.makerRate : model.takerRate;
-    const feeGross = Math.max(0, notional * rate);
-    let feeNet = feeGross;
-    let gtDiscount = 0;
-    let voucherDiscount = 0;
+    const baseFee = amount * price * rate;
+    let fee = baseFee;
 
-    if (model.gtDiscountRate && model.gtDiscountRate > 0) {
-        gtDiscount = feeNet * model.gtDiscountRate;
-        feeNet -= gtDiscount;
+    if (model.gtDiscountRate > 0) {
+        fee *= 1 - model.gtDiscountRate;
     }
 
-    if (model.voucherDiscountRate && model.voucherDiscountRate > 0) {
-        const rateDiscount = feeNet * model.voucherDiscountRate;
-        voucherDiscount += rateDiscount;
-        feeNet -= rateDiscount;
+    if (model.voucherDiscount) {
+        if (model.voucherDiscount.type === 'percent') {
+            fee -= fee * model.voucherDiscount.value;
+        } else {
+            fee -= model.voucherDiscount.value;
+        }
     }
 
-    if (model.voucherDiscountFixed && model.voucherDiscountFixed > 0) {
-        voucherDiscount += Math.min(model.voucherDiscountFixed, feeNet);
-        feeNet -= Math.min(model.voucherDiscountFixed, feeNet);
+    fee = Math.max(model.minimumFee, fee);
+
+    if (model.roundingDecimals !== undefined) {
+        const factor = 10 ** model.roundingDecimals;
+        fee = Math.round(fee * factor) / factor;
     }
 
-    const minimumFee = model.minimumFee ?? 0;
-    if (feeNet < minimumFee) {
-        feeNet = minimumFee;
-    }
-
-    feeNet = roundFee(feeNet, model.roundingStep ?? DEFAULT_ROUNDING_STEP);
-
-    return {
-        feeGross,
-        feeNet,
-        discounts: {
-            gt: gtDiscount,
-            voucher: voucherDiscount,
-        },
-    };
+    return Math.max(model.minimumFee, fee);
 }

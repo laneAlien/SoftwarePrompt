@@ -7,8 +7,10 @@ export interface SlippageModel {
 }
 
 export interface GridResult {
-    pnlGross: number;
-    pnlNet: number;
+    pnl: number;
+    pnl_gross: number;
+    fees_total: number;
+    pnl_net: number;
     maxDD: number;
     tradesCount: number;
     turnover: number;
@@ -201,21 +203,21 @@ export function backtestSpotGrid(ohlcv: OHLCV[], config: GridConfig): GridResult
         applyGridCandle(state, config, candle);
     }
 
-    const lastPrice = ohlcv[ohlcv.length - 1].close;
-    const finalEquity = state.quoteBalance + state.baseBalance * lastPrice;
-    const pnlGross = finalEquity - config.allocation + state.feesNet;
-    const pnlNet = finalEquity - config.allocation;
+    pnl = (balance + position * ohlcv[ohlcv.length - 1].close) - allocation;
+    
+    const pnlGross = pnl;
+    const feesTotal = fees;
+    const pnlNet = pnlGross - feesTotal;
 
     return {
-        pnlGross,
-        pnlNet,
-        maxDD: state.maxDD,
-        tradesCount: state.tradesCount,
-        turnover: state.turnover,
-        feesGross: state.feesGross,
-        feesNet: state.feesNet,
-        feeRatio: state.turnover > 0 ? state.feesNet / state.turnover : 0,
-        finalBase: state.baseBalance,
-        finalQuote: state.quoteBalance,
+        pnl,
+        pnl_gross: pnlGross,
+        fees_total: feesTotal,
+        pnl_net: pnlNet,
+        maxDD,
+        tradesCount,
+        turnover,
+        fees,
+        feeRatio: turnover > 0 ? fees / turnover : 0
     };
 }
