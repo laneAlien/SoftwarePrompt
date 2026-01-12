@@ -1,0 +1,43 @@
+Задание 1 — Исторические данные Gate + кэш
+
+Replit Agent / Codex prompt:
+
+Добавь модуль src/real/ohlcv.ts для загрузки OHLCV через ccxt с биржи Gate.io (read-only).
+Команда CLI: npm start fetch-ohlcv -- --exchange gate --symbol RAVE/USDT --timeframe 1m --since 2025-12-12 --limit 1000
+Реализуй локальный кэш в data/ohlcv/<exchange>/<symbol>/<timeframe>.jsonl (или sqlite).
+Добавь retry/backoff и защиту от rate limit.
+
+Задание 2 — Grid backtester (spot)
+
+Реализуй стратегию spot-grid в src/strategies/spotGrid.ts:
+входы: LOW, HIGH, grids, allocation, feeModel (maker/taker, GT discount), slippageModel.
+Реализуй backtest runner, который прогоняет свечи и симулирует исполнение лимиток на уровнях.
+Вывод: PnL, MaxDD, trades count, turnover, fees, fee_ratio.
+
+Задание 3 — Trailing Grid
+
+Добавь trailingGrid.ts: диапазон смещается вверх/вниз при выходе цены, параметр trail_step (%).
+Условия остановки: “1×15m close below MA30” или “2×15m close below LOW”.
+
+Задание 4 — Regime detector по MA30
+
+Создай src/core/regime.ts:
+
+MA30 на 15m
+
+slope MA30 (последние N точек)
+
+price vs MA30
+Классификация: TREND/RANGE/WEAKNESS.
+Добавь CLI analyze-regime.
+
+Задание 5 — Fee model Gate + voucher
+
+Реализуй feeModelGate.ts: maker/taker, GT-discount, voucher-discount, минимальные комиссии.
+Все отчёты должны показывать PnL “до” и “после” комиссий.
+
+Задание 6 — Импорт твоего ledger CSV
+
+Добавь import-ledger для CSV Gate (wallet/purselog).
+Посчитать: realized PnL, fees (GT), turnover, средний профит/сделка, fee_ratio, переторговля (trades/hour).
+Сравнить с результатом grid-backtest на том же периоде.
