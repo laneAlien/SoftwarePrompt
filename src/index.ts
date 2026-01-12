@@ -12,9 +12,11 @@ program
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
   .option('--since <since>', 'Start date (ISO)', '2025-12-12')
+  .option('--limit <limit>', 'Max candles', '1000')
   .action(async (options) => {
     try {
-      const data = await fetchOHLCV(options.exchange, options.symbol, options.timeframe, options.since);
+      const limit = parseInt(options.limit, 10);
+      const data = await fetchOHLCV(options.exchange, options.symbol, options.timeframe, options.since, limit);
       console.log(`Fetched ${data.length} candles.`);
     } catch (error) {
       console.error('Error fetching OHLCV:', error);

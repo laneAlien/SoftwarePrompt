@@ -31,7 +31,7 @@
     "rss-parser": "^3.13.0",
     "csv-parse": "^5.5.6",
     "xlsx": "^0.18.5",
-    "chartjs-node-canvas": "^4.1.9",
+    "chartjs-node-canvas": "4.1.6",
     "asciichart": "1.5.25",
     "pdfkit": "^0.15.0"
   },

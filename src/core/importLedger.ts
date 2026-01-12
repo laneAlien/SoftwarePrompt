@@ -20,7 +20,8 @@ export function importLedger(filePath: string): LedgerEntry[] {
     });
 
     return records.map((r: any) => {
-        const amountMatch = r.change_amount.match(/([-\d.]+)\s*(\w+)/);
+        const changeStr = r.change_amount || "";
+        const amountMatch = changeStr.match(/([-\d.]+)\s*(\w+)/);
         return {
             time: r.time,
             action: r.action_desc,
