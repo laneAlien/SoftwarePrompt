@@ -1,5 +1,8 @@
 export interface GridResult {
     pnl: number;
+    pnl_gross: number;
+    fees_total: number;
+    pnl_net: number;
     maxDD: number;
     tradesCount: number;
     turnover: number;
@@ -41,8 +44,15 @@ export function backtestSpotGrid(
 
     pnl = (balance + position * ohlcv[ohlcv.length - 1].close) - allocation;
     
+    const pnlGross = pnl;
+    const feesTotal = fees;
+    const pnlNet = pnlGross - feesTotal;
+
     return {
         pnl,
+        pnl_gross: pnlGross,
+        fees_total: feesTotal,
+        pnl_net: pnlNet,
         maxDD,
         tradesCount,
         turnover,
