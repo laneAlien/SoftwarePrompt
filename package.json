@@ -32,14 +32,13 @@
     "csv-parse": "^5.5.6",
     "xlsx": "^0.18.5",
     "chartjs-node-canvas": "^4.1.9",
-    "asciichart": "^1.5.26",
+    "asciichart": "1.5.25",
     "pdfkit": "^0.15.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/node-telegram-bot-api": "^0.64.0",
-    "@types/pdfkit": "^0.15.0",
-    "@types/rss-parser": "^3.13.9",
+    "csv-parse": "^5.5.6",
     "jest": "^29.7.0",
     "ts-jest": "^29.1.1",
     "tsx": "^4.7.0",

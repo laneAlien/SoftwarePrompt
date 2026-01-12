@@ -8,7 +8,7 @@ export interface GridResult {
 }
 
 export function backtestSpotGrid(
-    ohlcv: any[],
+    ohlcv: OHLCV[],
     low: number,
     high: number,
     grids: number,
@@ -22,7 +22,7 @@ export function backtestSpotGrid(
     let fees = 0;
     
     const step = (high - low) / grids;
-    const gridLevels = Array.from({ length: grids + 1 }, (_, i) => low + i * step);
+    // gridLevels is unused in this simplified version
     
     let position = 0;
     let balance = allocation;
@@ -30,11 +30,9 @@ export function backtestSpotGrid(
 
     for (const candle of ohlcv) {
         const price = candle.close;
-        // Simple simulation: check if price crossed any grid level
-        // In a real grid, we'd have buy/sell orders at each level
-        // This is a simplified version for demonstration
+        // Simplified grid logic: if price crosses grid level, execute trade
+        // For demonstration, we just track mark-to-market
         
-        // Mark-to-market PnL
         const currentEquity = balance + position * price;
         if (currentEquity > peak) peak = currentEquity;
         const dd = (peak - currentEquity) / peak;
@@ -52,3 +50,5 @@ export function backtestSpotGrid(
         feeRatio: turnover > 0 ? fees / turnover : 0
     };
 }
+
+import { OHLCV } from '../real/ohlcv';
