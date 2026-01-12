@@ -34,40 +34,29 @@ program
   .command('analyze-regime')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
-  .option('--timeframe <timeframe>', 'Timeframe', '15m')
-  .option('--since <since>', 'Start date (ISO)')
-  .option('--limit <limit>', 'Max candles', '1000')
-  .option('--slope-lookback <slopeLookback>', 'Slope lookback points', '10')
-  .option('--slope-threshold <slopeThreshold>', 'Slope threshold', '0')
+  .option('--slope-window <number>', 'MA30 slope window', '5')
   .action(async (options) => {
-      const since = options.since || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      const limit = parseInt(options.limit, 10);
-      const slopeLookback = parseInt(options.slopeLookback, 10);
-      const slopeThreshold = parseFloat(options.slopeThreshold);
-      const data = await fetchOHLCV(options.exchange, options.symbol, options.timeframe, since, limit);
-      const prices = data.map(candle => candle.close);
-      const result = detectRegime(prices, slopeLookback, slopeThreshold);
-      console.log(`Current regime for ${options.symbol}: ${result.regime}`);
-      console.log(`MA30: ${result.ma30.toFixed(4)} | slope: ${result.slope.toFixed(6)} | distance: ${result.distance.toFixed(4)}`);
+    const ohlcv = await fetchOHLCV(options.exchange, options.symbol, '15m', '2024-01-01', 1000);
+    const prices = ohlcv.map((candle) => candle.close);
+    const parsedSlopeWindow = Number(options.slopeWindow);
+    const slopeWindow = Number.isFinite(parsedSlopeWindow) ? parsedSlopeWindow : 5;
+    const { regime, slope, distance } = detectRegime(prices, { slopeWindow });
+    console.log(
+      `Current regime for ${options.symbol}: ${regime} | slope: ${slope.toFixed(6)} | distance: ${distance.toFixed(6)}`
+    );
   });
 
 program
   .command('import-ledger')
   .argument('<file>', 'Path to CSV file')
-  .option('--quote <quote>', 'Quote currency', 'USDT')
-  .option('--gt-price <gtPrice>', 'GT price in quote currency', '0')
-  .action((file, options) => {
-      try {
-        const entries = importLedger(file);
-        const metrics = calculateLedgerMetrics(entries, {
-          quoteCurrency: options.quote,
-          gtPrice: parseFloat(options.gtPrice),
-        });
-        console.log(`Imported ${entries.length} entries from ledger.`);
-        console.log('Ledger metrics:', metrics);
-      } catch (error) {
-        console.error('Error importing ledger:', error);
-      }
+  .action((file) => {
+    try {
+      const entries = importLedger(file);
+      console.log(`Imported ${entries.length} entries from ledger.`);
+      console.log('First entry:', entries[0]);
+    } catch (error) {
+      console.error('Error importing ledger:', error);
+    }
   });
 
 program
