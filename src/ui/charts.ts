@@ -34,3 +34,6 @@ export function renderAsciiChart(candles: Candle[]): string {
   return asciichart.plot(series, { height: 15 });
 }
 
+export function renderAsciiChartSeries(series: number[][], height = 15): string {
+  return asciichart.plot(series, { height });
+}
