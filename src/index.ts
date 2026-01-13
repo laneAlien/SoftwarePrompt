@@ -104,11 +104,14 @@ program
         const gridResult = backtestSpotGrid(periodCandles, low, high, grids, allocation, feeRate);
 
         console.log('\nGrid backtest comparison');
-        console.log(`Grid PnL: ${gridResult.pnl.toFixed(4)}`);
+        console.log(`Grid PnL (gross): ${gridResult.pnlGross.toFixed(4)}`);
+        console.log(`Grid PnL (net): ${gridResult.pnlNet.toFixed(4)}`);
         console.log(`Grid turnover: ${gridResult.turnover.toFixed(4)}`);
-        console.log(`Grid fees: ${gridResult.fees.toFixed(4)} (ratio ${(gridResult.feeRatio * 100).toFixed(4)}%)`);
+        console.log(
+          `Grid fees: ${gridResult.feesTotal.toFixed(4)} (ratio ${(gridResult.feeRatio * 100).toFixed(4)}%)`
+        );
         console.log(`Ledger PnL: ${summary.realizedPnl.toFixed(4)}`);
-        console.log(`PnL delta: ${(summary.realizedPnl - gridResult.pnl).toFixed(4)}`);
+        console.log(`PnL delta: ${(summary.realizedPnl - gridResult.pnlNet).toFixed(4)}`);
       } catch (error) {
         console.error('Error importing ledger:', error);
       }

@@ -1,11 +1,12 @@
 import { OHLCV } from '../real/ohlcv';
 
 export interface GridResult {
-  pnl: number;
+  pnlGross: number;
+  pnlNet: number;
   maxDD: number;
   tradesCount: number;
   turnover: number;
-  fees: number;
+  feesTotal: number;
   feeRatio: number;
 }
 
@@ -16,6 +17,9 @@ export interface GridEngineOptions {
   grids: number;
   allocation: number;
   feeRate?: number;
+  makerFeeRate?: number;
+  takerFeeRate?: number;
+  slippageRate?: number;
   trailStepPercent?: number;
   stopOnMa30?: boolean;
   stopOnLowCloses?: number;
@@ -25,13 +29,19 @@ interface GridState {
   low: number;
   high: number;
   step: number;
+  levels: number[];
 }
 
 function buildGridState(low: number, high: number, grids: number): GridState {
+  const levels =
+    grids <= 1
+      ? [low]
+      : Array.from({ length: grids }, (_, i) => low + ((high - low) * i) / (grids - 1));
   return {
     low,
     high,
-    step: (high - low) / grids,
+    step: grids > 1 ? (high - low) / (grids - 1) : 0,
+    levels,
   };
 }
 
@@ -52,35 +62,52 @@ function shiftRange(state: GridState, grids: number, direction: 'up' | 'down', t
   return buildGridState(low, high, grids);
 }
 
+function resolveExecutionPrice(
+  level: number,
+  side: 'buy' | 'sell',
+  isTaker: boolean,
+  slippageRate: number
+): number {
+  if (!isTaker || slippageRate <= 0) {
+    return level;
+  }
+
+  return side === 'buy' ? level * (1 + slippageRate) : level * (1 - slippageRate);
+}
+
 export function runGridBacktest(options: GridEngineOptions): GridResult {
   const { ohlcv, grids, allocation } = options;
 
   if (ohlcv.length === 0 || grids <= 0) {
     return {
-      pnl: 0,
+      pnlGross: 0,
+      pnlNet: 0,
       maxDD: 0,
       tradesCount: 0,
       turnover: 0,
-      fees: 0,
+      feesTotal: 0,
       feeRatio: 0,
     };
   }
 
-  const feeRate = options.feeRate ?? 0.002;
+  const makerFeeRate = options.makerFeeRate ?? options.feeRate ?? 0.001;
+  const takerFeeRate = options.takerFeeRate ?? options.feeRate ?? 0.002;
+  const slippageRate = options.slippageRate ?? 0;
   const trailStepPercent = options.trailStepPercent ?? 0;
   const trailStep = trailStepPercent / 100;
   let state = buildGridState(options.low, options.high, grids);
 
-  const orderValue = allocation / grids;
+  const orderValue = allocation / Math.max(1, grids - 1);
 
-  let pnl = 0;
+  let pnlGross = 0;
+  let pnlNet = 0;
   let maxDD = 0;
   let tradesCount = 0;
   let turnover = 0;
-  let fees = 0;
+  let feesTotal = 0;
 
-  let position = 0;
-  let balance = allocation;
+  let baseBalance = 0;
+  let quoteBalance = allocation;
   let peak = allocation;
 
   let maSum = 0;
@@ -183,14 +210,16 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     }
   }
 
-  pnl = balance + position * lastPrice - allocation;
+  pnlNet = quoteBalance + baseBalance * lastPrice - allocation;
+  pnlGross = pnlNet + feesTotal;
 
   return {
-    pnl,
+    pnlGross,
+    pnlNet,
     maxDD,
     tradesCount,
     turnover,
-    fees,
-    feeRatio: turnover > 0 ? fees / turnover : 0,
+    feesTotal,
+    feeRatio: turnover > 0 ? feesTotal / turnover : 0,
   };
 }
