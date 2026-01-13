@@ -8,6 +8,7 @@ import { analyzeLedger, importLedger, LedgerFeeMode, LedgerSummary } from './cor
 import { getProfileDefaults } from './core/profiles';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
+import { FeeDefaults, loadConfig } from './core/config';
 
 const program = new Command();
 
@@ -73,7 +74,8 @@ function resolveProfiledNumber(
   key: string,
   flags: string[],
   profileValue: number | undefined,
-  fallback: number
+  fallback: number,
+  configValue?: number
 ): number {
   const raw = readStringOption(options, key);
   if (isFlagSet(flags)) {
@@ -82,14 +84,18 @@ function resolveProfiledNumber(
   if (profileValue !== undefined) {
     return profileValue;
   }
-  return parseNumber(raw, fallback);
+  if (configValue !== undefined) {
+    return configValue;
+  }
+  return fallback;
 }
 
 function resolveProfiledOptionalNumber(
   options: Record<string, unknown>,
   key: string,
   flags: string[],
-  profileValue: number | undefined
+  profileValue: number | undefined,
+  configValue?: number
 ): number | undefined {
   const raw = readStringOption(options, key);
   if (isFlagSet(flags)) {
@@ -98,6 +104,9 @@ function resolveProfiledOptionalNumber(
   if (profileValue !== undefined) {
     return profileValue;
   }
+  if (configValue !== undefined) {
+    return configValue;
+  }
   return parseOptionalNumber(raw);
 }
 
@@ -105,7 +114,8 @@ function resolveProfiledOptionalBoolean(
   options: Record<string, unknown>,
   key: string,
   flags: string[],
-  profileValue: boolean | undefined
+  profileValue: boolean | undefined,
+  configValue?: boolean
 ): boolean | undefined {
   const raw = readStringOption(options, key);
   if (isFlagSet(flags)) {
@@ -113,6 +123,9 @@ function resolveProfiledOptionalBoolean(
   }
   if (profileValue !== undefined) {
     return profileValue;
+  }
+  if (configValue !== undefined) {
+    return configValue;
   }
   return parseOptionalBoolean(raw);
 }
@@ -122,7 +135,8 @@ function resolveProfiledString(
   key: string,
   flags: string[],
   profileValue: string | undefined,
-  fallback: string
+  fallback: string,
+  configValue?: string
 ): string {
   const raw = readStringOption(options, key);
   if (isFlagSet(flags)) {
@@ -131,7 +145,129 @@ function resolveProfiledString(
   if (profileValue !== undefined) {
     return profileValue;
   }
+  if (configValue !== undefined) {
+    return configValue;
+  }
   return raw ?? fallback;
+}
+
+function resolveConfigString(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  configValue: string | undefined,
+  fallback: string
+): string {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return raw ?? fallback;
+  }
+  if (configValue !== undefined) {
+    return configValue;
+  }
+  return fallback;
+}
+
+function resolveConfigOptionalString(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  configValue: string | undefined
+): string | undefined {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return raw;
+  }
+  if (configValue !== undefined) {
+    return configValue;
+  }
+  return undefined;
+}
+
+function resolveConfigNumber(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  configValue: number | undefined,
+  fallback: number
+): number {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return parseNumber(raw, fallback);
+  }
+  if (configValue !== undefined) {
+    return configValue;
+  }
+  return fallback;
+}
+
+function resolveConfigOptionalNumber(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  configValue: number | undefined
+): number | undefined {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return parseOptionalNumber(raw);
+  }
+  if (configValue !== undefined) {
+    return configValue;
+  }
+  return undefined;
+}
+
+function resolveFeeInputs(
+  options: Record<string, unknown>,
+  defaults: FeeDefaults,
+  slippageRateOverride?: number
+): {
+  feeRate: number;
+  makerFeeRate: number;
+  takerFeeRate: number;
+  gtDiscountRate: number;
+  voucherDiscountType?: string;
+  voucherDiscountValue?: number;
+  minimumFee: number;
+  roundingDecimals?: number;
+  slippageRate: number;
+} {
+  const feeRate = resolveConfigNumber(options, 'feeRate', ['--fee-rate'], defaults.feeRate, 0.002);
+  const makerFeeRate = resolveConfigNumber(options, 'makerFeeRate', ['--maker-fee-rate'], defaults.makerFeeRate, 0.001);
+  const takerFeeRate = resolveConfigNumber(options, 'takerFeeRate', ['--taker-fee-rate'], defaults.takerFeeRate, 0.002);
+  const gtDiscountRate = resolveConfigNumber(options, 'gtDiscountRate', ['--gt-discount-rate'], defaults.gtDiscountRate, 0);
+  const voucherDiscountType = resolveConfigOptionalString(
+    options,
+    'voucherDiscountType',
+    ['--voucher-discount-type'],
+    defaults.voucherDiscountType
+  );
+  const voucherDiscountValue = resolveConfigOptionalNumber(
+    options,
+    'voucherDiscountValue',
+    ['--voucher-discount-value'],
+    defaults.voucherDiscountValue
+  );
+  const minimumFee = resolveConfigNumber(options, 'minimumFee', ['--minimum-fee'], defaults.minimumFee, 0);
+  const roundingDecimals = resolveConfigOptionalNumber(
+    options,
+    'feeRoundingDecimals',
+    ['--fee-rounding-decimals'],
+    defaults.roundingDecimals
+  );
+  const slippageRate =
+    slippageRateOverride ?? resolveConfigNumber(options, 'slippageRate', ['--slippage-rate'], defaults.slippageRate, 0);
+  return {
+    feeRate,
+    makerFeeRate,
+    takerFeeRate,
+    gtDiscountRate,
+    voucherDiscountType,
+    voucherDiscountValue,
+    minimumFee,
+    roundingDecimals: roundingDecimals === undefined ? undefined : Math.trunc(roundingDecimals),
+    slippageRate,
+  };
 }
 
 function calculateRegimeConfidence(result: ReturnType<typeof detectRegime>, options: RegimeConfidenceOptions): number {
@@ -322,41 +458,36 @@ function resolveGridParams(
 
 function resolveFeeOptions(
   options: Record<string, unknown>,
-  overrides?: { feeModel?: string; slippageRate?: number }
+  overrides?: { feeModel?: string; slippageRate?: number },
+  defaults: FeeDefaults = {}
 ): GridFeeOptions {
-  const feeModel = (overrides?.feeModel ?? readStringOption(options, 'feeModel') ?? 'flat').toLowerCase();
-  const feeRate = parseNumber(readStringOption(options, 'feeRate'), 0.002);
-  const makerFeeRate = parseNumber(readStringOption(options, 'makerFeeRate'), 0.001);
-  const takerFeeRate = parseNumber(readStringOption(options, 'takerFeeRate'), 0.002);
-  const slippageRate = overrides?.slippageRate ?? parseNumber(readStringOption(options, 'slippageRate'), 0);
-  const gtDiscountRate = parseOptionalNumber(readStringOption(options, 'gtDiscountRate'));
-  const voucherDiscountType = readStringOption(options, 'voucherDiscountType');
-  const voucherDiscountValue = parseOptionalNumber(readStringOption(options, 'voucherDiscountValue'));
-  const minimumFee = parseOptionalNumber(readStringOption(options, 'minimumFee'));
-  const roundingDecimalsRaw = parseOptionalNumber(readStringOption(options, 'feeRoundingDecimals'));
-  const roundingDecimals = roundingDecimalsRaw === undefined ? undefined : Math.trunc(roundingDecimalsRaw);
+  const feeModel = (overrides?.feeModel ??
+    resolveConfigString(options, 'feeModel', ['--fee-model'], defaults.model, 'flat')).toLowerCase();
+  const feeInputs = resolveFeeInputs(options, defaults, overrides?.slippageRate);
   const normalizedVoucherType =
-    voucherDiscountType === 'percent' || voucherDiscountType === 'fixed' ? voucherDiscountType : undefined;
+    feeInputs.voucherDiscountType === 'percent' || feeInputs.voucherDiscountType === 'fixed'
+      ? feeInputs.voucherDiscountType
+      : undefined;
   if (feeModel === 'maker-taker') {
     return {
-      makerFeeRate,
-      takerFeeRate,
-      slippageRate,
-      gtDiscountRate,
+      makerFeeRate: feeInputs.makerFeeRate,
+      takerFeeRate: feeInputs.takerFeeRate,
+      slippageRate: feeInputs.slippageRate,
+      gtDiscountRate: feeInputs.gtDiscountRate,
       voucherDiscountType: normalizedVoucherType,
-      voucherDiscountValue,
-      minimumFee,
-      roundingDecimals,
+      voucherDiscountValue: feeInputs.voucherDiscountValue,
+      minimumFee: feeInputs.minimumFee,
+      roundingDecimals: feeInputs.roundingDecimals,
     };
   }
   return {
-    feeRate,
-    slippageRate,
-    gtDiscountRate,
+    feeRate: feeInputs.feeRate,
+    slippageRate: feeInputs.slippageRate,
+    gtDiscountRate: feeInputs.gtDiscountRate,
     voucherDiscountType: normalizedVoucherType,
-    voucherDiscountValue,
-    minimumFee,
-    roundingDecimals,
+    voucherDiscountValue: feeInputs.voucherDiscountValue,
+    minimumFee: feeInputs.minimumFee,
+    roundingDecimals: feeInputs.roundingDecimals,
   };
 }
 
@@ -491,6 +622,7 @@ program
 program
   .command('decide')
   .option('--profile <profile>', 'Profile name: default|promo|safe', 'default')
+  .option('--config <path>', 'Config path')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Backtest timeframe', '1m')
@@ -513,18 +645,33 @@ program
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .action(async (options) => {
     try {
+      const config = loadConfig(readStringOption(options, 'config'));
+      const outputDefaults = config.output ?? {};
+      const feeDefaults = config.fees ?? {};
+      const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
+      const exchange = resolveConfigString(options, 'exchange', ['--exchange'], config.exchange, 'gate');
+      const symbol = resolveConfigString(options, 'symbol', ['--symbol'], defaultSymbol, 'RAVE/USDT');
+      const timeframe = resolveConfigString(options, 'timeframe', ['--timeframe'], outputDefaults.timeframe, '1m');
+      const limit = resolveConfigNumber(options, 'limit', ['--limit'], outputDefaults.limit, 1000);
+      const since = resolveConfigString(options, 'since', ['--since'], outputDefaults.since, '2024-01-01');
+      const until =
+        resolveConfigOptionalString(options, 'until', ['--until'], outputDefaults.until) ?? new Date().toISOString();
+      const ohlcvSource = resolveConfigString(
+        options,
+        'ohlcvSource',
+        ['--ohlcv-source'],
+        outputDefaults.ohlcvSource,
+        'exchange'
+      );
       const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
-      const limit = parseInt(options.limit, 10);
-      const since = readStringOption(options, 'since') ?? '2024-01-01';
-      const until = readStringOption(options, 'until') ?? new Date().toISOString();
       const ohlcv = await resolveOhlcv({
-        exchange: options.exchange,
-        symbol: options.symbol,
+        exchange,
+        symbol,
         timeframe: '15m',
         since,
         until,
-        limit,
-        ohlcvSource: options.ohlcvSource,
+        limit: String(limit),
+        ohlcvSource,
       });
       if (!ohlcv.length) {
         console.log('No OHLCV data available to decide.');
@@ -550,15 +697,18 @@ program
         'feeModel',
         ['--fee-model'],
         profileDefaults.feeModel,
-        'flat'
+        'flat',
+        feeDefaults.model
       ).toLowerCase();
       const slippageRate = resolveProfiledNumber(
         options,
         'slippageRate',
         ['--slippage-rate'],
         profileDefaults.slippageRate,
-        0
+        0,
+        feeDefaults.slippageRate
       );
+      const feeInputs = resolveFeeInputs(options, feeDefaults, slippageRate);
       formatProfileSummary({
         profile: profileName,
         grids: profileDefaults.grids,
@@ -570,22 +720,23 @@ program
       });
       const recommendedMode = strategy === 'no-trade' ? 'spot' : strategy;
       const recommendedCommand = buildRecommendedCommand({
-        exchange: readStringOption(options, 'exchange') ?? 'gate',
-        symbol: readStringOption(options, 'symbol') ?? 'RAVE/USDT',
-        timeframe: readStringOption(options, 'timeframe') ?? '1m',
+        exchange,
+        symbol,
+        timeframe,
         since,
         until,
-        ohlcvSource: (readStringOption(options, 'ohlcvSource') as OhlcvSource) ?? 'exchange',
+        ohlcvSource,
         profile: profileName,
         feeModel,
-        feeRate: parseNumber(readStringOption(options, 'feeRate'), 0.002),
-        makerFeeRate: parseNumber(readStringOption(options, 'makerFeeRate'), 0.001),
-        takerFeeRate: parseNumber(readStringOption(options, 'takerFeeRate'), 0.002),
-        gtDiscountRate: parseNumber(readStringOption(options, 'gtDiscountRate'), 0),
-        voucherDiscountType: readStringOption(options, 'voucherDiscountType'),
-        voucherDiscountValue: readStringOption(options, 'voucherDiscountValue'),
-        minimumFee: parseNumber(readStringOption(options, 'minimumFee'), 0),
-        feeRoundingDecimals: readStringOption(options, 'feeRoundingDecimals'),
+        feeRate: feeInputs.feeRate,
+        makerFeeRate: feeInputs.makerFeeRate,
+        takerFeeRate: feeInputs.takerFeeRate,
+        gtDiscountRate: feeInputs.gtDiscountRate,
+        voucherDiscountType: feeInputs.voucherDiscountType,
+        voucherDiscountValue: feeInputs.voucherDiscountValue ? String(feeInputs.voucherDiscountValue) : undefined,
+        minimumFee: feeInputs.minimumFee,
+        feeRoundingDecimals:
+          feeInputs.roundingDecimals === undefined ? undefined : String(feeInputs.roundingDecimals),
         slippageRate,
         mode: recommendedMode,
       });
@@ -699,6 +850,7 @@ program
     'Backtest grid strategy (spot uses static grid range; trailing shifts grid range with price and can stop on MA30/low closes).'
   )
   .option('--profile <profile>', 'Profile name: default|promo|safe', 'default')
+  .option('--config <path>', 'Config path')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
@@ -727,12 +879,38 @@ program
   .option('--stop-on-low-closes <count>', 'Stop after N closes below grid low')
   .action(async (options) => {
     try {
-      const ohlcv = await resolveOhlcv(options);
+      const config = loadConfig(readStringOption(options, 'config'));
+      const outputDefaults = config.output ?? {};
+      const feeDefaults = config.fees ?? {};
+      const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
+      const exchange = resolveConfigString(options, 'exchange', ['--exchange'], config.exchange, 'gate');
+      const symbol = resolveConfigString(options, 'symbol', ['--symbol'], defaultSymbol, 'RAVE/USDT');
+      const timeframe = resolveConfigString(options, 'timeframe', ['--timeframe'], outputDefaults.timeframe, '1m');
+      const since = resolveConfigString(options, 'since', ['--since'], outputDefaults.since, '2025-12-12');
+      const until = resolveConfigOptionalString(options, 'until', ['--until'], outputDefaults.until);
+      const limit = resolveConfigNumber(options, 'limit', ['--limit'], outputDefaults.limit, 1000);
+      const ohlcvSource = resolveConfigString(
+        options,
+        'ohlcvSource',
+        ['--ohlcv-source'],
+        outputDefaults.ohlcvSource,
+        'exchange'
+      );
+      const mode = resolveConfigString(options, 'mode', ['--mode'], outputDefaults.mode, 'spot').toLowerCase();
+      const ohlcv = await resolveOhlcv({
+        exchange,
+        symbol,
+        timeframe,
+        since,
+        until,
+        limit: String(limit),
+        ohlcvSource,
+        rebuild: options.rebuild,
+      });
       if (!ohlcv.length) {
         console.log('No OHLCV data available for backtest.');
         return;
       }
-      const mode = (readStringOption(options, 'mode') ?? 'spot').toLowerCase();
       if (mode !== 'spot' && mode !== 'trailing') {
         throw new Error(`Unsupported mode "${mode}". Use spot or trailing.`);
       }
@@ -745,16 +923,18 @@ program
         'feeModel',
         ['--fee-model'],
         profileDefaults.feeModel,
-        'flat'
+        'flat',
+        feeDefaults.model
       ).toLowerCase();
       const slippageRate = resolveProfiledNumber(
         options,
         'slippageRate',
         ['--slippage-rate'],
         profileDefaults.slippageRate,
-        0
+        0,
+        feeDefaults.slippageRate
       );
-      const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate });
+      const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate }, feeDefaults);
       const trailStepPercent = resolveProfiledOptionalNumber(
         options,
         'trailStepPercent',
@@ -797,7 +977,7 @@ program
         mode === 'trailing'
           ? backtestTrailingGrid({
               ...commonOptions,
-              sourceTimeframe: readStringOption(options, 'timeframe'),
+              sourceTimeframe: timeframe,
               trailStepPercent: trailStepPercent ?? 0,
               stopOnMa30,
               stopOnLowCloses,
