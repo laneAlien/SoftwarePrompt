@@ -33,6 +33,11 @@ interface GridFeeOptions {
   slippageRate?: number;
 }
 
+interface RegimeConfidenceOptions {
+  minSlope: number;
+  minDistance: number;
+}
+
 function parseNumber(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
@@ -55,6 +60,66 @@ function parseOptionalBoolean(value: string | undefined): boolean | undefined {
   if (value === 'true' || value === '1') return true;
   if (value === 'false' || value === '0') return false;
   return undefined;
+}
+
+function calculateRegimeConfidence(result: ReturnType<typeof detectRegime>, options: RegimeConfidenceOptions): number {
+  const slopeDenominator = Math.max(options.minSlope, Number.EPSILON);
+  const distanceDenominator = Math.max(options.minDistance, Number.EPSILON);
+  const slopeScore = Math.min(1, Math.abs(result.slope) / slopeDenominator);
+  const distanceScore = Math.min(1, Math.abs(result.distance) / distanceDenominator);
+  return Math.round(((slopeScore + distanceScore) / 2) * 100);
+}
+
+function buildRecommendedCommand(params: {
+  exchange: string;
+  symbol: string;
+  timeframe: string;
+  since: string;
+  until: string;
+  ohlcvSource: OhlcvSource;
+  feeModel: string;
+  feeRate: number;
+  makerFeeRate: number;
+  takerFeeRate: number;
+  gtDiscountRate: number;
+  voucherDiscountType?: string;
+  voucherDiscountValue?: string;
+  minimumFee: number;
+  feeRoundingDecimals?: string;
+  slippageRate: number;
+  mode: string;
+}): string {
+  const parts = [
+    'npm run cli -- backtest-grid',
+    `--exchange ${params.exchange}`,
+    `--symbol ${params.symbol}`,
+    `--timeframe ${params.timeframe}`,
+    `--since ${params.since}`,
+    `--until ${params.until}`,
+    `--ohlcv-source ${params.ohlcvSource}`,
+    `--mode ${params.mode}`,
+    `--fee-model ${params.feeModel}`,
+  ];
+
+  if (params.feeModel === 'maker-taker') {
+    parts.push(`--maker-fee-rate ${params.makerFeeRate}`, `--taker-fee-rate ${params.takerFeeRate}`);
+  } else {
+    parts.push(`--fee-rate ${params.feeRate}`);
+  }
+
+  parts.push(`--gt-discount-rate ${params.gtDiscountRate}`, `--minimum-fee ${params.minimumFee}`);
+
+  if (params.voucherDiscountType && params.voucherDiscountValue) {
+    parts.push(`--voucher-discount-type ${params.voucherDiscountType}`, `--voucher-discount-value ${params.voucherDiscountValue}`);
+  }
+  if (params.feeRoundingDecimals) {
+    parts.push(`--fee-rounding-decimals ${params.feeRoundingDecimals}`);
+  }
+  if (params.slippageRate) {
+    parts.push(`--slippage-rate ${params.slippageRate}`);
+  }
+
+  return parts.join(' ');
 }
 
 function formatMetrics(label: string, metrics: OutputMetrics): void {
@@ -319,6 +384,94 @@ program
         6
       )} | period (15m): ${periodStart} → ${periodEnd}`
     );
+  });
+
+program
+  .command('decide')
+  .option('--exchange <exchange>', 'Exchange ID', 'gate')
+  .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
+  .option('--timeframe <timeframe>', 'Backtest timeframe', '1m')
+  .option('--since <since>', 'Start date (ISO)', '2024-01-01')
+  .option('--until <until>', 'End date (ISO)')
+  .option('--limit <limit>', 'Max candles', '1000')
+  .option('--slope-window <number>', 'MA30 slope window', '5')
+  .option('--min-slope <number>', 'Minimum MA30 slope to confirm trend', '0.0001')
+  .option('--min-distance <number>', 'Minimum price distance to MA30', '0.001')
+  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
+  .option('--fee-model <model>', 'Fee model: flat|maker-taker', 'flat')
+  .option('--fee-rate <feeRate>', 'Grid fee rate', '0.002')
+  .option('--maker-fee-rate <rate>', 'Maker fee rate', '0.001')
+  .option('--taker-fee-rate <rate>', 'Taker fee rate', '0.002')
+  .option('--gt-discount-rate <rate>', 'GT discount rate (percent)', '0')
+  .option('--voucher-discount-type <type>', 'Voucher discount type: percent|fixed')
+  .option('--voucher-discount-value <value>', 'Voucher discount value')
+  .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
+  .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
+  .option('--slippage-rate <rate>', 'Slippage rate', '0')
+  .action(async (options) => {
+    try {
+      const limit = parseInt(options.limit, 10);
+      const since = readStringOption(options, 'since') ?? '2024-01-01';
+      const until = readStringOption(options, 'until') ?? new Date().toISOString();
+      const ohlcv = await resolveOhlcv({
+        exchange: options.exchange,
+        symbol: options.symbol,
+        timeframe: '15m',
+        since,
+        until,
+        limit,
+        ohlcvSource: options.ohlcvSource,
+      });
+      if (!ohlcv.length) {
+        console.log('No OHLCV data available to decide.');
+        return;
+      }
+      const slopeWindow = parseNumber(readStringOption(options, 'slopeWindow'), 5);
+      const minSlope = parseNumber(readStringOption(options, 'minSlope'), 0.0001);
+      const minDistance = parseNumber(readStringOption(options, 'minDistance'), 0.001);
+      const regimeResult = detectRegime(ohlcv, { slopeWindow, minSlope, minDistance });
+      const confidence = calculateRegimeConfidence(regimeResult, { minSlope, minDistance });
+      console.log(
+        `Regime: ${regimeResult.regime} | slope: ${regimeResult.slope.toFixed(6)} | distance: ${regimeResult.distance.toFixed(
+          6
+        )} | confidence: ${confidence}`
+      );
+
+      const strategy =
+        regimeResult.regime === 'TREND' ? 'trailing' : regimeResult.regime === 'RANGE' ? 'spot' : 'no-trade';
+      console.log(`Strategy: ${strategy}`);
+
+      const feeModel = (readStringOption(options, 'feeModel') ?? 'flat').toLowerCase();
+      const recommendedMode = strategy === 'no-trade' ? 'spot' : strategy;
+      const recommendedCommand = buildRecommendedCommand({
+        exchange: readStringOption(options, 'exchange') ?? 'gate',
+        symbol: readStringOption(options, 'symbol') ?? 'RAVE/USDT',
+        timeframe: readStringOption(options, 'timeframe') ?? '1m',
+        since,
+        until,
+        ohlcvSource: (readStringOption(options, 'ohlcvSource') as OhlcvSource) ?? 'exchange',
+        feeModel,
+        feeRate: parseNumber(readStringOption(options, 'feeRate'), 0.002),
+        makerFeeRate: parseNumber(readStringOption(options, 'makerFeeRate'), 0.001),
+        takerFeeRate: parseNumber(readStringOption(options, 'takerFeeRate'), 0.002),
+        gtDiscountRate: parseNumber(readStringOption(options, 'gtDiscountRate'), 0),
+        voucherDiscountType: readStringOption(options, 'voucherDiscountType'),
+        voucherDiscountValue: readStringOption(options, 'voucherDiscountValue'),
+        minimumFee: parseNumber(readStringOption(options, 'minimumFee'), 0),
+        feeRoundingDecimals: readStringOption(options, 'feeRoundingDecimals'),
+        slippageRate: parseNumber(readStringOption(options, 'slippageRate'), 0),
+        mode: recommendedMode,
+      });
+
+      if (strategy === 'no-trade') {
+        console.log('Recommended command (no-trade, for evaluation only):');
+      } else {
+        console.log('Recommended command:');
+      }
+      console.log(recommendedCommand);
+    } catch (error) {
+      console.error('Error deciding strategy:', error);
+    }
   });
 
 program
