@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { fetchOHLCV } from './real/ohlcv';
 import { detectRegime } from './core/regime';
 import { analyzeLedger, importLedger, LedgerFeeMode, LedgerSummary } from './core/importLedger';
+import { getProfileDefaults } from './core/profiles';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
 
@@ -62,6 +63,77 @@ function parseOptionalBoolean(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
+function isFlagSet(flags: string[]): boolean {
+  const argv = process.argv.slice(2);
+  return flags.some((flag) => argv.includes(flag) || argv.some((arg) => arg.startsWith(`${flag}=`)));
+}
+
+function resolveProfiledNumber(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  profileValue: number | undefined,
+  fallback: number
+): number {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return parseNumber(raw, fallback);
+  }
+  if (profileValue !== undefined) {
+    return profileValue;
+  }
+  return parseNumber(raw, fallback);
+}
+
+function resolveProfiledOptionalNumber(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  profileValue: number | undefined
+): number | undefined {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return parseOptionalNumber(raw);
+  }
+  if (profileValue !== undefined) {
+    return profileValue;
+  }
+  return parseOptionalNumber(raw);
+}
+
+function resolveProfiledOptionalBoolean(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  profileValue: boolean | undefined
+): boolean | undefined {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return parseOptionalBoolean(raw);
+  }
+  if (profileValue !== undefined) {
+    return profileValue;
+  }
+  return parseOptionalBoolean(raw);
+}
+
+function resolveProfiledString(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  profileValue: string | undefined,
+  fallback: string
+): string {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return raw ?? fallback;
+  }
+  if (profileValue !== undefined) {
+    return profileValue;
+  }
+  return raw ?? fallback;
+}
+
 function calculateRegimeConfidence(result: ReturnType<typeof detectRegime>, options: RegimeConfidenceOptions): number {
   const slopeDenominator = Math.max(options.minSlope, Number.EPSILON);
   const distanceDenominator = Math.max(options.minDistance, Number.EPSILON);
@@ -77,6 +149,7 @@ function buildRecommendedCommand(params: {
   since: string;
   until: string;
   ohlcvSource: OhlcvSource;
+  profile?: string;
   feeModel: string;
   feeRate: number;
   makerFeeRate: number;
@@ -91,6 +164,7 @@ function buildRecommendedCommand(params: {
 }): string {
   const parts = [
     'npm run cli -- backtest-grid',
+    params.profile ? `--profile ${params.profile}` : undefined,
     `--exchange ${params.exchange}`,
     `--symbol ${params.symbol}`,
     `--timeframe ${params.timeframe}`,
@@ -119,7 +193,7 @@ function buildRecommendedCommand(params: {
     parts.push(`--slippage-rate ${params.slippageRate}`);
   }
 
-  return parts.join(' ');
+  return parts.filter((part): part is string => Boolean(part)).join(' ');
 }
 
 function formatMetrics(label: string, metrics: OutputMetrics): void {
@@ -232,7 +306,8 @@ function buildGridMetrics(result: GridResult): OutputMetrics {
 
 function resolveGridParams(
   options: Record<string, unknown>,
-  candles: { low: number; high: number }[]
+  candles: { low: number; high: number }[],
+  overrides?: { grids?: number; allocation?: number }
 ): { low: number; high: number; grids: number; allocation: number } {
   const gridLow = readStringOption(options, 'gridLow');
   const gridHigh = readStringOption(options, 'gridHigh');
@@ -240,17 +315,20 @@ function resolveGridParams(
   const allocationOption = readStringOption(options, 'allocation');
   const low = gridLow ? parseFloat(gridLow) : Math.min(...candles.map((c) => c.low));
   const high = gridHigh ? parseFloat(gridHigh) : Math.max(...candles.map((c) => c.high));
-  const grids = parseNumber(gridsOption, 10);
-  const allocation = parseNumber(allocationOption, 1000);
+  const grids = overrides?.grids ?? parseNumber(gridsOption, 10);
+  const allocation = overrides?.allocation ?? parseNumber(allocationOption, 1000);
   return { low, high, grids, allocation };
 }
 
-function resolveFeeOptions(options: Record<string, unknown>): GridFeeOptions {
-  const feeModel = (readStringOption(options, 'feeModel') ?? 'flat').toLowerCase();
+function resolveFeeOptions(
+  options: Record<string, unknown>,
+  overrides?: { feeModel?: string; slippageRate?: number }
+): GridFeeOptions {
+  const feeModel = (overrides?.feeModel ?? readStringOption(options, 'feeModel') ?? 'flat').toLowerCase();
   const feeRate = parseNumber(readStringOption(options, 'feeRate'), 0.002);
   const makerFeeRate = parseNumber(readStringOption(options, 'makerFeeRate'), 0.001);
   const takerFeeRate = parseNumber(readStringOption(options, 'takerFeeRate'), 0.002);
-  const slippageRate = parseNumber(readStringOption(options, 'slippageRate'), 0);
+  const slippageRate = overrides?.slippageRate ?? parseNumber(readStringOption(options, 'slippageRate'), 0);
   const gtDiscountRate = parseOptionalNumber(readStringOption(options, 'gtDiscountRate'));
   const voucherDiscountType = readStringOption(options, 'voucherDiscountType');
   const voucherDiscountValue = parseOptionalNumber(readStringOption(options, 'voucherDiscountValue'));
@@ -280,6 +358,30 @@ function resolveFeeOptions(options: Record<string, unknown>): GridFeeOptions {
     minimumFee,
     roundingDecimals,
   };
+}
+
+function formatProfileSummary(params: {
+  profile: string;
+  grids?: number;
+  feeModel?: string;
+  slippageRate?: number;
+  trailStepPercent?: number;
+  stopOnMa30?: boolean;
+  stopOnLowCloses?: number;
+}): void {
+  const formatValue = (value: number | boolean | string | undefined): string =>
+    value === undefined ? 'n/a' : String(value);
+  console.log(`Profile: ${params.profile}`);
+  console.log(
+    [
+      `grids=${formatValue(params.grids)}`,
+      `fee_model=${formatValue(params.feeModel)}`,
+      `slippage_rate=${formatValue(params.slippageRate)}`,
+      `trail_step_percent=${formatValue(params.trailStepPercent)}`,
+      `stop_on_ma30=${formatValue(params.stopOnMa30)}`,
+      `stop_on_low_closes=${formatValue(params.stopOnLowCloses)}`,
+    ].join(' | ')
+  );
 }
 
 function resolveOhlcvCachePath(exchange: string, symbol: string, timeframe: string): string {
@@ -388,6 +490,7 @@ program
 
 program
   .command('decide')
+  .option('--profile <profile>', 'Profile name: default|promo|safe', 'default')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Backtest timeframe', '1m')
@@ -410,6 +513,7 @@ program
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .action(async (options) => {
     try {
+      const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
       const limit = parseInt(options.limit, 10);
       const since = readStringOption(options, 'since') ?? '2024-01-01';
       const until = readStringOption(options, 'until') ?? new Date().toISOString();
@@ -441,7 +545,29 @@ program
         regimeResult.regime === 'TREND' ? 'trailing' : regimeResult.regime === 'RANGE' ? 'spot' : 'no-trade';
       console.log(`Strategy: ${strategy}`);
 
-      const feeModel = (readStringOption(options, 'feeModel') ?? 'flat').toLowerCase();
+      const feeModel = resolveProfiledString(
+        options,
+        'feeModel',
+        ['--fee-model'],
+        profileDefaults.feeModel,
+        'flat'
+      ).toLowerCase();
+      const slippageRate = resolveProfiledNumber(
+        options,
+        'slippageRate',
+        ['--slippage-rate'],
+        profileDefaults.slippageRate,
+        0
+      );
+      formatProfileSummary({
+        profile: profileName,
+        grids: profileDefaults.grids,
+        feeModel,
+        slippageRate,
+        trailStepPercent: profileDefaults.trailStepPercent,
+        stopOnMa30: profileDefaults.stopOnMa30,
+        stopOnLowCloses: profileDefaults.stopOnLowCloses,
+      });
       const recommendedMode = strategy === 'no-trade' ? 'spot' : strategy;
       const recommendedCommand = buildRecommendedCommand({
         exchange: readStringOption(options, 'exchange') ?? 'gate',
@@ -450,6 +576,7 @@ program
         since,
         until,
         ohlcvSource: (readStringOption(options, 'ohlcvSource') as OhlcvSource) ?? 'exchange',
+        profile: profileName,
         feeModel,
         feeRate: parseNumber(readStringOption(options, 'feeRate'), 0.002),
         makerFeeRate: parseNumber(readStringOption(options, 'makerFeeRate'), 0.001),
@@ -459,7 +586,7 @@ program
         voucherDiscountValue: readStringOption(options, 'voucherDiscountValue'),
         minimumFee: parseNumber(readStringOption(options, 'minimumFee'), 0),
         feeRoundingDecimals: readStringOption(options, 'feeRoundingDecimals'),
-        slippageRate: parseNumber(readStringOption(options, 'slippageRate'), 0),
+        slippageRate,
         mode: recommendedMode,
       });
 
@@ -571,6 +698,7 @@ program
   .description(
     'Backtest grid strategy (spot uses static grid range; trailing shifts grid range with price and can stop on MA30/low closes).'
   )
+  .option('--profile <profile>', 'Profile name: default|promo|safe', 'default')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
@@ -609,11 +737,51 @@ program
         throw new Error(`Unsupported mode "${mode}". Use spot or trailing.`);
       }
 
-      const { low, high, grids, allocation } = resolveGridParams(options, ohlcv);
-      const feeOptions = resolveFeeOptions(options);
-      const trailStepPercent = parseOptionalNumber(readStringOption(options, 'trailStepPercent'));
-      const stopOnMa30 = parseOptionalBoolean(readStringOption(options, 'stopOnMa30'));
-      const stopOnLowCloses = parseOptionalNumber(readStringOption(options, 'stopOnLowCloses'));
+      const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
+      const grids = resolveProfiledNumber(options, 'grids', ['--grids'], profileDefaults.grids, 10);
+      const { low, high, allocation } = resolveGridParams(options, ohlcv, { grids });
+      const feeModel = resolveProfiledString(
+        options,
+        'feeModel',
+        ['--fee-model'],
+        profileDefaults.feeModel,
+        'flat'
+      ).toLowerCase();
+      const slippageRate = resolveProfiledNumber(
+        options,
+        'slippageRate',
+        ['--slippage-rate'],
+        profileDefaults.slippageRate,
+        0
+      );
+      const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate });
+      const trailStepPercent = resolveProfiledOptionalNumber(
+        options,
+        'trailStepPercent',
+        ['--trail-step-percent'],
+        profileDefaults.trailStepPercent
+      );
+      const stopOnMa30 = resolveProfiledOptionalBoolean(
+        options,
+        'stopOnMa30',
+        ['--stop-on-ma30'],
+        profileDefaults.stopOnMa30
+      );
+      const stopOnLowCloses = resolveProfiledOptionalNumber(
+        options,
+        'stopOnLowCloses',
+        ['--stop-on-low-closes'],
+        profileDefaults.stopOnLowCloses
+      );
+      formatProfileSummary({
+        profile: profileName,
+        grids,
+        feeModel,
+        slippageRate,
+        trailStepPercent,
+        stopOnMa30,
+        stopOnLowCloses,
+      });
       const commonOptions = {
         ohlcv,
         low,
@@ -644,6 +812,7 @@ program
 program
   .command('compare')
   .argument('<file>', 'Path to CSV file')
+  .option('--profile <profile>', 'Profile name: default|promo|safe', 'default')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
@@ -666,6 +835,7 @@ program
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .action(async (file, options) => {
     try {
+      const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
       const entries = importLedger(file);
       const feeMode = readLedgerFeeMode(options);
       const gtFeeResolution =
@@ -716,8 +886,32 @@ program
         return;
       }
 
-      const { low, high, grids, allocation } = resolveGridParams(options, periodCandles);
-      const feeOptions = resolveFeeOptions(options);
+      const grids = resolveProfiledNumber(options, 'grids', ['--grids'], profileDefaults.grids, 10);
+      const { low, high, allocation } = resolveGridParams(options, periodCandles, { grids });
+      const feeModel = resolveProfiledString(
+        options,
+        'feeModel',
+        ['--fee-model'],
+        profileDefaults.feeModel,
+        'flat'
+      ).toLowerCase();
+      const slippageRate = resolveProfiledNumber(
+        options,
+        'slippageRate',
+        ['--slippage-rate'],
+        profileDefaults.slippageRate,
+        0
+      );
+      const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate });
+      formatProfileSummary({
+        profile: profileName,
+        grids,
+        feeModel,
+        slippageRate,
+        trailStepPercent: profileDefaults.trailStepPercent,
+        stopOnMa30: profileDefaults.stopOnMa30,
+        stopOnLowCloses: profileDefaults.stopOnLowCloses,
+      });
       const gridResult = runGridBacktest({
         ohlcv: periodCandles,
         low,
