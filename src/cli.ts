@@ -428,9 +428,30 @@ function resolveConfigOptionalNumber(
   return undefined;
 }
 
+function resolveProfiledOptionalString(
+  options: Record<string, unknown>,
+  key: string,
+  flags: string[],
+  profileValue: string | undefined,
+  configValue?: string
+): string | undefined {
+  const raw = readStringOption(options, key);
+  if (isFlagSet(flags)) {
+    return raw;
+  }
+  if (profileValue !== undefined) {
+    return profileValue;
+  }
+  if (configValue !== undefined) {
+    return configValue;
+  }
+  return raw;
+}
+
 function resolveFeeInputs(
   options: Record<string, unknown>,
   defaults: FeeDefaults,
+  profileDefaults?: FeeDefaults,
   slippageRateOverride?: number
 ): {
   feeRate: number;
@@ -443,31 +464,77 @@ function resolveFeeInputs(
   roundingDecimals?: number;
   slippageRate: number;
 } {
-  const feeRate = resolveConfigNumber(options, 'feeRate', ['--fee-rate'], defaults.feeRate, 0.002);
-  const makerFeeRate = resolveConfigNumber(options, 'makerFeeRate', ['--maker-fee-rate'], defaults.makerFeeRate, 0.001);
-  const takerFeeRate = resolveConfigNumber(options, 'takerFeeRate', ['--taker-fee-rate'], defaults.takerFeeRate, 0.002);
-  const gtDiscountRate = resolveConfigNumber(options, 'gtDiscountRate', ['--gt-discount-rate'], defaults.gtDiscountRate, 0);
-  const voucherDiscountType = resolveConfigOptionalString(
+  const feeRate = resolveProfiledNumber(
+    options,
+    'feeRate',
+    ['--fee-rate'],
+    profileDefaults?.feeRate,
+    0.002,
+    defaults.feeRate
+  );
+  const makerFeeRate = resolveProfiledNumber(
+    options,
+    'makerFeeRate',
+    ['--maker-fee-rate'],
+    profileDefaults?.makerFeeRate,
+    0.001,
+    defaults.makerFeeRate
+  );
+  const takerFeeRate = resolveProfiledNumber(
+    options,
+    'takerFeeRate',
+    ['--taker-fee-rate'],
+    profileDefaults?.takerFeeRate,
+    0.002,
+    defaults.takerFeeRate
+  );
+  const gtDiscountRate = resolveProfiledNumber(
+    options,
+    'gtDiscountRate',
+    ['--gt-discount-rate'],
+    profileDefaults?.gtDiscountRate,
+    0,
+    defaults.gtDiscountRate
+  );
+  const voucherDiscountType = resolveProfiledOptionalString(
     options,
     'voucherDiscountType',
     ['--voucher-discount-type'],
+    profileDefaults?.voucherDiscountType,
     defaults.voucherDiscountType
   );
-  const voucherDiscountValue = resolveConfigOptionalNumber(
+  const voucherDiscountValue = resolveProfiledOptionalNumber(
     options,
     'voucherDiscountValue',
     ['--voucher-discount-value'],
+    profileDefaults?.voucherDiscountValue,
     defaults.voucherDiscountValue
   );
-  const minimumFee = resolveConfigNumber(options, 'minimumFee', ['--minimum-fee'], defaults.minimumFee, 0);
-  const roundingDecimals = resolveConfigOptionalNumber(
+  const minimumFee = resolveProfiledNumber(
+    options,
+    'minimumFee',
+    ['--minimum-fee'],
+    profileDefaults?.minimumFee,
+    0,
+    defaults.minimumFee
+  );
+  const roundingDecimals = resolveProfiledOptionalNumber(
     options,
     'feeRoundingDecimals',
     ['--fee-rounding-decimals'],
+    profileDefaults?.roundingDecimals,
     defaults.roundingDecimals
   );
   const slippageRate =
-    slippageRateOverride ?? resolveConfigNumber(options, 'slippageRate', ['--slippage-rate'], defaults.slippageRate, 0);
+    slippageRateOverride ??
+    resolveProfiledNumber(
+      options,
+      'slippageRate',
+      ['--slippage-rate'],
+      profileDefaults?.slippageRate,
+      0,
+      defaults.slippageRate
+    );
   return {
     feeRate,
     makerFeeRate,
@@ -677,14 +744,7 @@ function resolveGridParams(
   return { low, high, grids, allocation };
 }
 
-function resolveFeeOptions(
-  options: Record<string, unknown>,
-  overrides?: { feeModel?: string; slippageRate?: number },
-  defaults: FeeDefaults = {}
-): GridFeeOptions {
-  const feeModel = (overrides?.feeModel ??
-    resolveConfigString(options, 'feeModel', ['--fee-model'], defaults.model, 'flat')).toLowerCase();
-  const feeInputs = resolveFeeInputs(options, defaults, overrides?.slippageRate);
+function buildFeeOptions(feeModel: string, feeInputs: ReturnType<typeof resolveFeeInputs>): GridFeeOptions {
   const normalizedVoucherType =
     feeInputs.voucherDiscountType === 'percent' || feeInputs.voucherDiscountType === 'fixed'
       ? feeInputs.voucherDiscountType
@@ -726,6 +786,44 @@ function buildProfileSummaryRows(params: {
     grids: params.grids ?? null,
     fee_model: params.feeModel ?? null,
     slippage_rate: params.slippageRate ?? null,
+    trail_step_percent: params.trailStepPercent ?? null,
+    stop_on_ma30: params.stopOnMa30 ?? null,
+    stop_on_low_closes: params.stopOnLowCloses ?? null,
+  };
+}
+
+function buildFeeSummaryRows(
+  feeModel: string,
+  feeInputs: ReturnType<typeof resolveFeeInputs>
+): Record<string, ReportValue> {
+  return {
+    fee_model: feeModel,
+    fee_rate: feeInputs.feeRate ?? null,
+    maker_fee_rate: feeInputs.makerFeeRate ?? null,
+    taker_fee_rate: feeInputs.takerFeeRate ?? null,
+    gt_discount_rate: feeInputs.gtDiscountRate ?? null,
+    voucher_discount_type: feeInputs.voucherDiscountType ?? null,
+    voucher_discount_value: feeInputs.voucherDiscountValue ?? null,
+    minimum_fee: feeInputs.minimumFee ?? null,
+    fee_rounding_decimals: feeInputs.roundingDecimals ?? null,
+    slippage_rate: feeInputs.slippageRate ?? null,
+  };
+}
+
+function buildBacktestParamRows(params: {
+  grids: number;
+  low: number;
+  high: number;
+  allocation: number;
+  trailStepPercent?: number;
+  stopOnMa30?: boolean;
+  stopOnLowCloses?: number;
+}): Record<string, ReportValue> {
+  return {
+    grids: params.grids,
+    grid_low: params.low,
+    grid_high: params.high,
+    allocation: params.allocation,
     trail_step_percent: params.trailStepPercent ?? null,
     stop_on_ma30: params.stopOnMa30 ?? null,
     stop_on_low_closes: params.stopOnLowCloses ?? null,
@@ -933,7 +1031,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
       0,
       feeDefaults.slippageRate
     );
-    const feeInputs = resolveFeeInputs(options, feeDefaults, slippageRate);
+    const feeInputs = resolveFeeInputs(options, feeDefaults, profileDefaults, slippageRate);
     const recommendedMode = strategy === 'no-trade' ? 'spot' : strategy;
     const recommendedCommand = buildRecommendedCommand({
       exchange,
@@ -995,18 +1093,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
           },
           {
             title: 'Fees',
-            rows: {
-              fee_model: feeModel,
-              fee_rate: feeInputs.feeRate ?? null,
-              maker_fee_rate: feeInputs.makerFeeRate ?? null,
-              taker_fee_rate: feeInputs.takerFeeRate ?? null,
-              gt_discount_rate: feeInputs.gtDiscountRate ?? null,
-              voucher_discount_type: feeInputs.voucherDiscountType ?? null,
-              voucher_discount_value: feeInputs.voucherDiscountValue ?? null,
-              minimum_fee: feeInputs.minimumFee ?? null,
-              fee_rounding_decimals: feeInputs.roundingDecimals ?? null,
-              slippage_rate: slippageRate ?? null,
-            },
+            rows: buildFeeSummaryRows(feeModel, feeInputs),
           },
           {
             title: recommendationTitle,
@@ -1088,7 +1175,8 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       0,
       feeDefaults.slippageRate
     );
-    const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate }, feeDefaults);
+    const feeInputs = resolveFeeInputs(options, feeDefaults, profileDefaults, slippageRate);
+    const feeOptions = buildFeeOptions(feeModel, feeInputs);
     const trailStepPercent = resolveProfiledOptionalNumber(
       options,
       'trailStepPercent',
@@ -1142,6 +1230,22 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
             stopOnMa30,
             stopOnLowCloses,
           }),
+        },
+        {
+          title: 'Parameters',
+          rows: buildBacktestParamRows({
+            grids,
+            low,
+            high,
+            allocation,
+            trailStepPercent,
+            stopOnMa30,
+            stopOnLowCloses,
+          }),
+        },
+        {
+          title: 'Fees',
+          rows: buildFeeSummaryRows(feeModel, feeInputs),
         },
         {
           title: 'Grid backtest metrics',
@@ -2027,7 +2131,8 @@ Examples:
         profileDefaults.slippageRate,
         0
       );
-      const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate });
+      const feeInputs = resolveFeeInputs(options, {}, profileDefaults, slippageRate);
+      const feeOptions = buildFeeOptions(feeModel, feeInputs);
       const gridResult = runGridBacktest({
         ohlcv: periodCandles,
         low,
@@ -2080,6 +2185,22 @@ Examples:
               stopOnMa30: profileDefaults.stopOnMa30,
               stopOnLowCloses: profileDefaults.stopOnLowCloses,
             }),
+          },
+          {
+            title: 'Parameters',
+            rows: buildBacktestParamRows({
+              grids,
+              low,
+              high,
+              allocation,
+              trailStepPercent: profileDefaults.trailStepPercent,
+              stopOnMa30: profileDefaults.stopOnMa30,
+              stopOnLowCloses: profileDefaults.stopOnLowCloses,
+            }),
+          },
+          {
+            title: 'Fees',
+            rows: buildFeeSummaryRows(feeModel, feeInputs),
           },
           {
             title: 'Grid backtest metrics',
