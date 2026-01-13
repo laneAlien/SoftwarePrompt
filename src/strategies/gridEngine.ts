@@ -99,6 +99,7 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
 
   const orderValue = allocation / Math.max(1, grids - 1);
 
+  const feeRate = makerFeeRate;
   let pnlGross = 0;
   let pnlNet = 0;
   let maxDD = 0;
@@ -134,29 +135,22 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
         const executionPrice = resolveExecutionPrice(levelPrice, 'sell', isTaker, slippageRate);
         const qty = orderValue / levelPrice;
         if (baseBalance >= qty) {
-          const tradeValue = qty * executionPrice;
-          const fee = tradeValue * feeRate;
           baseBalance -= qty;
-          quoteBalance += tradeValue;
-          quoteBalance -= fee;
-          turnover += tradeValue;
-          feesTotal += fee;
+          quoteBalance += orderValue;
+          turnover += orderValue;
+          feesTotal += orderValue * feeRate;
           tradesCount += 1;
         }
       }
     } else if (toIndex < fromIndex) {
       for (let i = fromIndex - 1; i >= toIndex; i -= 1) {
-        const levelPrice = resolveGridPrice(state, i);
-        const executionPrice = resolveExecutionPrice(levelPrice, 'buy', isTaker, slippageRate);
-        const qty = orderValue / levelPrice;
-        const tradeValue = qty * executionPrice;
-        const fee = tradeValue * feeRate;
-        if (quoteBalance >= tradeValue + fee) {
+        if (quoteBalance >= orderValue) {
+          const levelPrice = resolveGridPrice(state, i);
+          const qty = orderValue / levelPrice;
           baseBalance += qty;
-          quoteBalance -= tradeValue;
-          quoteBalance -= fee;
-          turnover += tradeValue;
-          feesTotal += fee;
+          quoteBalance -= orderValue;
+          turnover += orderValue;
+          feesTotal += orderValue * feeRate;
           tradesCount += 1;
         }
       }
