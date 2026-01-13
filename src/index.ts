@@ -9,6 +9,8 @@ import { getProfileDefaults } from './core/profiles';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
 import { FeeDefaults, loadConfig } from './core/config';
+import { sma } from './indicators/sma';
+import { renderAsciiChartSeries } from './ui/charts';
 import {
   OutputFormat,
   ReportPayload,
@@ -43,6 +45,19 @@ function normalizeOutputFormat(value: string | undefined): OutputFormat {
 
 function readOutputFormat(options: Record<string, unknown>): OutputFormat {
   return normalizeOutputFormat(readStringOption(options, 'output'));
+}
+
+function shouldRenderAsciiPlot(options: Record<string, unknown>, outputFormat: OutputFormat): boolean {
+  return outputFormat !== 'json' && readStringOption(options, 'plot') === 'ascii';
+}
+
+function printAsciiPlot(outputFormat: OutputFormat, title: string, chart: string): void {
+  if (outputFormat === 'json') return;
+  if (outputFormat === 'md') {
+    console.log(`\n${title}\n\n\`\`\`\n${chart}\n\`\`\`\n`);
+    return;
+  }
+  console.log(`\n${title}\n${chart}\n`);
 }
 
 function renderReport(format: OutputFormat, report: ReportPayload): void {
@@ -694,6 +709,7 @@ program
   .option('--slope-window <number>', 'MA30 slope window', '5')
   .option('--min-slope <number>', 'Minimum MA30 slope to confirm trend', '0.0001')
   .option('--min-distance <number>', 'Minimum price distance to MA30', '0.001')
+  .option('--plot <type>', 'Plot type: ascii')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .action(async (options) => {
@@ -739,6 +755,18 @@ program
         },
       ],
     };
+    if (shouldRenderAsciiPlot(options, outputFormat)) {
+      const closes = ohlcv.map((candle) => candle.close);
+      const ma30Series = sma(closes, 30).map((value, index) =>
+        Number.isFinite(value) ? value : closes[index]
+      );
+      const plotPoints = Math.min(ohlcv.length, 120);
+      const chart = renderAsciiChartSeries([
+        closes.slice(-plotPoints),
+        ma30Series.slice(-plotPoints),
+      ]);
+      printAsciiPlot(outputFormat, `Close + MA30 (last ${plotPoints} points)`, chart);
+    }
     renderReportWithSave('analyze-regime', outputFormat, report, options, options.symbol);
   });
 
@@ -1082,6 +1110,7 @@ program
   .option('--trail-step-percent <percent>', 'Trailing grid step percent')
   .option('--stop-on-ma30 <enabled>', 'Stop when close drops below MA30 (true|false)')
   .option('--stop-on-low-closes <count>', 'Stop after N closes below grid low')
+  .option('--plot <type>', 'Plot type: ascii')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .action(async (options) => {
@@ -1209,6 +1238,13 @@ program
           },
         ],
       };
+      if (shouldRenderAsciiPlot(options, outputFormat)) {
+        const plotPoints = Math.min(gridResult.equityCurve.length, 120);
+        if (plotPoints > 0) {
+          const chart = renderAsciiChartSeries([gridResult.equityCurve.slice(-plotPoints)]);
+          printAsciiPlot(outputFormat, `Equity curve (last ${plotPoints} points)`, chart);
+        }
+      }
       renderReportWithSave('backtest-grid', outputFormat, report, options, symbol);
     } catch (error) {
       console.error('Error running grid backtest:', error);

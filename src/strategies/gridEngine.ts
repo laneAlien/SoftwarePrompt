@@ -9,6 +9,7 @@ export interface GridResult {
   turnover: number;
   feesTotal: number;
   feeRatio: number;
+  equityCurve: number[];
 }
 
 export interface GridEngineOptions {
@@ -116,6 +117,7 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
       turnover: 0,
       feesTotal: 0,
       feeRatio: 0,
+      equityCurve: [],
     };
   }
 
@@ -144,6 +146,7 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
   let stopIndex = 0;
   let lastPrice = ohlcv[0].open;
   let currentIndex: number | null = resolveGridIndex(lastPrice, state, grids);
+  const equityCurve: number[] = [];
 
   const executeMove = (fromPrice: number, toPrice: number): void => {
     if (fromPrice === toPrice) {
@@ -246,6 +249,7 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     if (currentEquity > peak) peak = currentEquity;
     const dd = peak > 0 ? (peak - currentEquity) / peak : 0;
     if (dd > maxDD) maxDD = dd;
+    equityCurve.push(currentEquity);
 
     let stopTriggered = false;
     if (useExternalStops) {
@@ -276,5 +280,6 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     turnover,
     feesTotal,
     feeRatio: turnover > 0 ? feesTotal / turnover : 0,
+    equityCurve,
   };
 }
