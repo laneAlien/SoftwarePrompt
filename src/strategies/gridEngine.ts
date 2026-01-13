@@ -125,27 +125,38 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     const fromIndex = currentIndex ?? resolveGridIndex(fromPrice, state, grids);
     const toIndex = resolveGridIndex(toPrice, state, grids);
 
+    const isTaker = slippageRate > 0;
+    const feeRate = isTaker ? takerFeeRate : makerFeeRate;
+
     if (toIndex > fromIndex) {
       for (let i = fromIndex + 1; i <= toIndex; i += 1) {
         const levelPrice = resolveGridPrice(state, i);
+        const executionPrice = resolveExecutionPrice(levelPrice, 'sell', isTaker, slippageRate);
         const qty = orderValue / levelPrice;
-        if (position >= qty) {
-          position -= qty;
-          balance += orderValue;
-          turnover += orderValue;
-          fees += orderValue * feeRate;
+        if (baseBalance >= qty) {
+          const tradeValue = qty * executionPrice;
+          const fee = tradeValue * feeRate;
+          baseBalance -= qty;
+          quoteBalance += tradeValue;
+          quoteBalance -= fee;
+          turnover += tradeValue;
+          feesTotal += fee;
           tradesCount += 1;
         }
       }
     } else if (toIndex < fromIndex) {
       for (let i = fromIndex - 1; i >= toIndex; i -= 1) {
-        if (balance >= orderValue) {
-          const levelPrice = resolveGridPrice(state, i);
-          const qty = orderValue / levelPrice;
-          position += qty;
-          balance -= orderValue;
-          turnover += orderValue;
-          fees += orderValue * feeRate;
+        const levelPrice = resolveGridPrice(state, i);
+        const executionPrice = resolveExecutionPrice(levelPrice, 'buy', isTaker, slippageRate);
+        const qty = orderValue / levelPrice;
+        const tradeValue = qty * executionPrice;
+        const fee = tradeValue * feeRate;
+        if (quoteBalance >= tradeValue + fee) {
+          baseBalance += qty;
+          quoteBalance -= tradeValue;
+          quoteBalance -= fee;
+          turnover += tradeValue;
+          feesTotal += fee;
           tradesCount += 1;
         }
       }
@@ -177,7 +188,7 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
       executeMove(fromPrice, toPrice);
     }
 
-    const currentEquity = balance + position * close;
+    const currentEquity = quoteBalance + baseBalance * close;
     if (currentEquity > peak) peak = currentEquity;
     const dd = peak > 0 ? (peak - currentEquity) / peak : 0;
     if (dd > maxDD) maxDD = dd;
