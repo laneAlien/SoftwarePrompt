@@ -151,7 +151,7 @@ function saveReport(
   const timestamp = now.toISOString().replace(/[:.]/g, '-');
   const safeCommand = sanitizeFilePart(commandName);
   const safeSymbol = sanitizeFilePart(symbol);
-  const extension = format === 'json' ? 'json' : 'md';
+  const extension = format === 'json' ? 'json' : format === 'md' ? 'md' : 'txt';
   const dir = path.join('reports', dateFolder);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `report_${safeCommand}_${safeSymbol}_${timestamp}.${extension}`);
@@ -169,10 +169,6 @@ function renderReportWithSave(
 ): void {
   renderReport(outputFormat, report);
   if (options.saveReport) {
-    if (outputFormat === 'text') {
-      console.error('Saving report requires --output md|json.');
-      return;
-    }
     const savedPath = saveReport(commandName, symbol, outputFormat, report);
     console.log(`Saved report -> ${savedPath}`);
   }
