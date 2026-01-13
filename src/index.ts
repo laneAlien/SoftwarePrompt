@@ -1215,6 +1215,16 @@ async function runWizard(): Promise<void> {
 }
 
 program
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- analyze-regime --exchange gate --symbol RAVE/USDT --since 2024-01-01
+  $ npm start -- backtest-grid --symbol RAVE/USDT --since 2024-01-01 --mode spot
+  $ npm start -- compare ./data/ledger.csv --symbol RAVE/USDT
+  $ npm start -- decide --profile promo --symbol RAVE/USDT
+`
+  )
   .command('fetch-ohlcv')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
@@ -1223,6 +1233,14 @@ program
   .option('--until <until>', 'End date (ISO)')
   .option('--limit <limit>', 'Max candles', '1000')
   .option('--rebuild', 'Rebuild cache', false)
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- fetch-ohlcv --exchange gate --symbol RAVE/USDT --timeframe 1m --since 2024-01-01
+  $ npm start -- fetch-ohlcv --symbol BTC/USDT --timeframe 1h --since 2024-06-01 --limit 500 --rebuild
+`
+  )
   .action(async (options) => {
     try {
       const limit = parseInt(options.limit, 10);
@@ -1249,6 +1267,14 @@ program
   .option('--plot <type>', 'Plot type: ascii')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- analyze-regime --exchange gate --symbol RAVE/USDT --since 2024-01-01
+  $ npm start -- analyze-regime --symbol BTC/USDT --since 2023-10-01 --output md --save-report
+`
+  )
   .action(async (options) => {
     const outputFormat = readOutputFormat(options);
     const limit = parseInt(options.limit, 10);
@@ -1310,6 +1336,13 @@ program
 program
   .command('wizard')
   .description('Interactive wizard to run decide and optionally backtest-grid.')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- wizard
+`
+  )
   .action(async () => {
     await runWizard();
   });
@@ -1340,6 +1373,14 @@ program
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- decide --symbol RAVE/USDT --since 2024-01-01
+  $ npm start -- decide --profile promo --symbol RAVE/USDT --output md --save-report
+`
+  )
   .action(async (options) => {
     await handleDecide(options);
   });
@@ -1369,6 +1410,14 @@ program
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- import-ledger ./data/ledger.csv --symbol RAVE/USDT
+  $ npm start -- import-ledger ./data/ledger.csv --symbol RAVE/USDT --ledger-fee-mode ohlcv --output md
+`
+  )
   .action(async (file, options) => {
       try {
         const outputFormat = readOutputFormat(options);
@@ -1504,6 +1553,14 @@ program
   .option('--plot <type>', 'Plot type: ascii|png')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- backtest-grid --symbol RAVE/USDT --since 2024-01-01 --mode spot
+  $ npm start -- backtest-grid --profile promo --symbol RAVE/USDT --mode trailing --plot ascii
+`
+  )
   .action(async (options) => {
     await handleBacktestGrid(options);
   });
@@ -1535,6 +1592,14 @@ program
   .option('--plot <type>', 'Plot type: png')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- compare ./data/ledger.csv --symbol RAVE/USDT
+  $ npm start -- compare ./data/ledger.csv --profile promo --symbol RAVE/USDT --plot png
+`
+  )
   .action(async (file, options) => {
     try {
       const outputFormat = readOutputFormat(options);
