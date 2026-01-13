@@ -23,11 +23,28 @@ const program = new Command();
 program
   .name('crypto-ai')
   .description('AI-powered crypto trading assistant with market simulation')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ crypto-ai simulate --symbol TONUSDT --timeframe 1m --candles 200 --initial-price 2.5
+  $ crypto-ai trade-sim --symbol TONUSDT --timeframe 1m --candles 500 --initial-price 2.5
+  $ crypto-ai analyze-pair --exchange gate --symbol RAVE/USDT --timeframe 15m
+`
+  )
   .version('1.0.0');
 
 program
   .command('simulate')
   .description('Generate artificial candles and display statistics')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ crypto-ai simulate --symbol TONUSDT --timeframe 1m --candles 200 --initial-price 2.5
+  $ crypto-ai simulate --symbol BTCUSDT --timeframe 15m --candles 96 --initial-price 64000 --volatility 0.03
+`
+  )
   .requiredOption('--symbol <string>', 'Trading pair symbol (e.g., TONUSDT)')
   .requiredOption('--timeframe <string>', 'Timeframe (e.g., 1m, 15m, 1h)')
   .requiredOption('--candles <number>', 'Number of candles to generate')
@@ -63,6 +80,14 @@ program
 program
   .command('trade-sim')
   .description('Run AI TradeBot simulation')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ crypto-ai trade-sim --symbol TONUSDT --timeframe 1m --candles 300 --initial-price 2.5
+  $ crypto-ai trade-sim --symbol BTCUSDT --timeframe 5m --candles 500 --initial-price 64000 --save-chart
+`
+  )
   .requiredOption('--symbol <string>', 'Trading pair symbol')
   .requiredOption('--timeframe <string>', 'Timeframe')
   .requiredOption('--candles <number>', 'Number of candles')
@@ -152,6 +177,14 @@ program
 program
   .command('analyze-pair')
   .description('Analyze a real trading pair')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ crypto-ai analyze-pair --exchange gate --symbol RAVE/USDT --timeframe 15m
+  $ crypto-ai analyze-pair --exchange kucoin --symbol BTC/USDT --timeframe 1h --months 3
+`
+  )
   .requiredOption('--exchange <string>', 'Exchange name (kucoin | gate)')
   .requiredOption('--symbol <string>', 'Trading pair symbol')
   .requiredOption('--timeframe <string>', 'Timeframe')
@@ -252,6 +285,14 @@ program
 program
   .command('analyze-portfolio')
   .description('Analyze portfolio across exchanges')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ crypto-ai analyze-portfolio
+  $ crypto-ai analyze-portfolio --no-llm
+`
+  )
   .option('--no-llm', 'Disable LLM analysis')
   .action(async (options) => {
     console.log('\nAnalyzing portfolio...\n');
@@ -296,6 +337,14 @@ program
 program
   .command('analyze-news')
   .description('Analyze news and signals')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ crypto-ai analyze-news
+  $ crypto-ai analyze-news --symbol BTC
+`
+  )
   .option('--symbol <string>', 'Filter by symbol')
   .action(async (options) => {
     console.log('\nFetching news and signals...\n');

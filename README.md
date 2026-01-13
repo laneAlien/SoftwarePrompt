@@ -109,6 +109,32 @@ Aggregates balances from configured exchanges.
 npm start analyze-news -- --symbol TON
 ```
 
+## Quick recipes
+
+* посмотреть режим
+
+```bash
+npm start -- analyze-regime --exchange gate --symbol RAVE/USDT --since 2024-01-01
+```
+
+* бэктест grid
+
+```bash
+npm start -- backtest-grid --symbol RAVE/USDT --since 2024-01-01 --mode spot
+```
+
+* сравнение с ledger
+
+```bash
+npm start -- compare ./data/ledger.csv --symbol RAVE/USDT
+```
+
+* PROMO MODE
+
+```bash
+npm start -- backtest-grid --profile promo --symbol RAVE/USDT --since 2024-01-01 --mode trailing
+```
+
 ## Report Analysis
 Supply CSV/TSV/Excel reports containing `day`, `spent`, `voucherIncome`, and `profit` columns. The assistant aggregates totals and adjusts strategy confidence when losses dominate.
 
