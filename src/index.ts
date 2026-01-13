@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
+import readline from 'readline';
 import { Command } from 'commander';
 import { fetchOHLCV } from './real/ohlcv';
 import { detectRegime } from './core/regime';
@@ -735,6 +736,484 @@ async function resolveOhlcv(options: Record<string, unknown>): Promise<ReturnTyp
   });
 }
 
+type WizardGoal = 'profit' | 'turnover';
+type WizardRisk = 'safe' | 'default' | 'aggressive';
+
+async function runWithArgv(args: string[], action: () => Promise<void>): Promise<void> {
+  const originalArgv = process.argv;
+  process.argv = [...originalArgv.slice(0, 2), ...args];
+  try {
+    await action();
+  } finally {
+    process.argv = originalArgv;
+  }
+}
+
+function selectWizardProfile(goal: WizardGoal, risk: WizardRisk): string {
+  if (risk === 'safe') {
+    return 'safe';
+  }
+  if (risk === 'aggressive') {
+    return 'promo';
+  }
+  if (goal === 'turnover') {
+    return 'promo';
+  }
+  return 'default';
+}
+
+async function askQuestion(rl: readline.Interface, prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    rl.question(prompt, resolve);
+  });
+}
+
+async function promptInput(rl: readline.Interface, label: string, defaultValue: string): Promise<string> {
+  const answer = (await askQuestion(rl, `${label} [${defaultValue}]: `)).trim();
+  return answer || defaultValue;
+}
+
+async function promptOptionalInput(
+  rl: readline.Interface,
+  label: string,
+  defaultValue?: string
+): Promise<string | undefined> {
+  const suffix = defaultValue ? ` [${defaultValue}]` : ' (blank = now)';
+  const answer = (await askQuestion(rl, `${label}${suffix}: `)).trim();
+  if (answer) {
+    return answer;
+  }
+  return defaultValue || undefined;
+}
+
+async function promptChoice<T extends string>(
+  rl: readline.Interface,
+  label: string,
+  choices: readonly T[],
+  defaultValue: T
+): Promise<T> {
+  const normalizedChoices = choices.map((choice) => choice.toLowerCase());
+  while (true) {
+    const answer = (await askQuestion(rl, `${label} (${choices.join('/')}) [${defaultValue}]: `))
+      .trim()
+      .toLowerCase();
+    const resolved = (answer || defaultValue).toLowerCase();
+    const index = normalizedChoices.indexOf(resolved);
+    if (index >= 0) {
+      return choices[index];
+    }
+    console.log(`Please enter one of: ${choices.join(', ')}`);
+  }
+}
+
+async function promptYesNo(rl: readline.Interface, label: string, defaultValue: boolean): Promise<boolean> {
+  const defaultToken = defaultValue ? 'y' : 'n';
+  while (true) {
+    const answer = (await askQuestion(rl, `${label} [${defaultToken}]: `)).trim().toLowerCase();
+    const resolved = answer || defaultToken;
+    if (resolved === 'y' || resolved === 'yes') {
+      return true;
+    }
+    if (resolved === 'n' || resolved === 'no') {
+      return false;
+    }
+    console.log('Please enter y or n.');
+  }
+}
+
+async function handleDecide(options: Record<string, unknown>): Promise<void> {
+  try {
+    const outputFormat = readOutputFormat(options);
+    const config = loadConfig(readStringOption(options, 'config'));
+    const outputDefaults = config.output ?? {};
+    const feeDefaults = config.fees ?? {};
+    const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
+    const exchange = resolveConfigString(options, 'exchange', ['--exchange'], config.exchange, 'gate');
+    const symbol = resolveConfigString(options, 'symbol', ['--symbol'], defaultSymbol, 'RAVE/USDT');
+    const timeframe = resolveConfigString(options, 'timeframe', ['--timeframe'], outputDefaults.timeframe, '1m');
+    const limit = resolveConfigNumber(options, 'limit', ['--limit'], outputDefaults.limit, 1000);
+    const since = resolveConfigString(options, 'since', ['--since'], outputDefaults.since, '2024-01-01');
+    const until =
+      resolveConfigOptionalString(options, 'until', ['--until'], outputDefaults.until) ?? new Date().toISOString();
+    const ohlcvSource = resolveConfigString(
+      options,
+      'ohlcvSource',
+      ['--ohlcv-source'],
+      outputDefaults.ohlcvSource,
+      'exchange'
+    );
+    const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
+    const ohlcv = await resolveOhlcv({
+      exchange,
+      symbol,
+      timeframe: '15m',
+      since,
+      until,
+      limit: String(limit),
+      ohlcvSource,
+    });
+    if (!ohlcv.length) {
+      renderReportWithSave(
+        'decide',
+        outputFormat,
+        buildStatusReport('No OHLCV data available to decide.'),
+        options,
+        symbol
+      );
+      return;
+    }
+    const slopeWindow = parseNumber(readStringOption(options, 'slopeWindow'), 5);
+    const minSlope = parseNumber(readStringOption(options, 'minSlope'), 0.0001);
+    const minDistance = parseNumber(readStringOption(options, 'minDistance'), 0.001);
+    const regimeResult = detectRegime(ohlcv, { slopeWindow, minSlope, minDistance });
+    const confidence = calculateRegimeConfidence(regimeResult, { minSlope, minDistance });
+
+    const strategy =
+      regimeResult.regime === 'TREND' ? 'trailing' : regimeResult.regime === 'RANGE' ? 'spot' : 'no-trade';
+
+    const feeModel = resolveProfiledString(
+      options,
+      'feeModel',
+      ['--fee-model'],
+      profileDefaults.feeModel,
+      'flat',
+      feeDefaults.model
+    ).toLowerCase();
+    const slippageRate = resolveProfiledNumber(
+      options,
+      'slippageRate',
+      ['--slippage-rate'],
+      profileDefaults.slippageRate,
+      0,
+      feeDefaults.slippageRate
+    );
+    const feeInputs = resolveFeeInputs(options, feeDefaults, slippageRate);
+    const recommendedMode = strategy === 'no-trade' ? 'spot' : strategy;
+    const recommendedCommand = buildRecommendedCommand({
+      exchange,
+      symbol,
+      timeframe,
+      since,
+      until,
+      ohlcvSource,
+      profile: profileName,
+      feeModel,
+      feeRate: feeInputs.feeRate,
+      makerFeeRate: feeInputs.makerFeeRate,
+      takerFeeRate: feeInputs.takerFeeRate,
+      gtDiscountRate: feeInputs.gtDiscountRate,
+      voucherDiscountType: feeInputs.voucherDiscountType,
+      voucherDiscountValue: feeInputs.voucherDiscountValue ? String(feeInputs.voucherDiscountValue) : undefined,
+      minimumFee: feeInputs.minimumFee,
+      feeRoundingDecimals:
+        feeInputs.roundingDecimals === undefined ? undefined : String(feeInputs.roundingDecimals),
+      slippageRate,
+      mode: recommendedMode,
+    });
+    const recommendationTitle =
+      strategy === 'no-trade' ? 'Recommended command (no-trade, for evaluation only)' : 'Recommended command';
+    renderReportWithSave(
+      'decide',
+      outputFormat,
+      {
+        title: 'Decision report',
+        sections: [
+          {
+            title: 'Regime',
+            rows: {
+              symbol,
+              regime: regimeResult.regime,
+              slope: regimeResult.slope.toFixed(6),
+              distance: regimeResult.distance.toFixed(6),
+              confidence,
+            },
+          },
+          {
+            title: 'Strategy',
+            rows: {
+              strategy,
+              recommended_mode: recommendedMode,
+            },
+          },
+          {
+            title: 'Profile',
+            rows: buildProfileSummaryRows({
+              profile: profileName,
+              grids: profileDefaults.grids,
+              feeModel,
+              slippageRate,
+              trailStepPercent: profileDefaults.trailStepPercent,
+              stopOnMa30: profileDefaults.stopOnMa30,
+              stopOnLowCloses: profileDefaults.stopOnLowCloses,
+            }),
+          },
+          {
+            title: 'Fees',
+            rows: {
+              fee_model: feeModel,
+              fee_rate: feeInputs.feeRate ?? null,
+              maker_fee_rate: feeInputs.makerFeeRate ?? null,
+              taker_fee_rate: feeInputs.takerFeeRate ?? null,
+              gt_discount_rate: feeInputs.gtDiscountRate ?? null,
+              voucher_discount_type: feeInputs.voucherDiscountType ?? null,
+              voucher_discount_value: feeInputs.voucherDiscountValue ?? null,
+              minimum_fee: feeInputs.minimumFee ?? null,
+              fee_rounding_decimals: feeInputs.roundingDecimals ?? null,
+              slippage_rate: slippageRate ?? null,
+            },
+          },
+          {
+            title: recommendationTitle,
+            rows: {
+              command: recommendedCommand,
+            },
+          },
+        ],
+      },
+      options,
+      symbol
+    );
+  } catch (error) {
+    console.error('Error deciding strategy:', error);
+  }
+}
+
+async function handleBacktestGrid(options: Record<string, unknown>): Promise<void> {
+  try {
+    const outputFormat = readOutputFormat(options);
+    const config = loadConfig(readStringOption(options, 'config'));
+    const outputDefaults = config.output ?? {};
+    const feeDefaults = config.fees ?? {};
+    const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
+    const exchange = resolveConfigString(options, 'exchange', ['--exchange'], config.exchange, 'gate');
+    const symbol = resolveConfigString(options, 'symbol', ['--symbol'], defaultSymbol, 'RAVE/USDT');
+    const timeframe = resolveConfigString(options, 'timeframe', ['--timeframe'], outputDefaults.timeframe, '1m');
+    const since = resolveConfigString(options, 'since', ['--since'], outputDefaults.since, '2025-12-12');
+    const until = resolveConfigOptionalString(options, 'until', ['--until'], outputDefaults.until);
+    const limit = resolveConfigNumber(options, 'limit', ['--limit'], outputDefaults.limit, 1000);
+    const ohlcvSource = resolveConfigString(
+      options,
+      'ohlcvSource',
+      ['--ohlcv-source'],
+      outputDefaults.ohlcvSource,
+      'exchange'
+    );
+    const mode = resolveConfigString(options, 'mode', ['--mode'], outputDefaults.mode, 'spot').toLowerCase();
+    const ohlcv = await resolveOhlcv({
+      exchange,
+      symbol,
+      timeframe,
+      since,
+      until,
+      limit: String(limit),
+      ohlcvSource,
+      rebuild: options.rebuild,
+    });
+    if (!ohlcv.length) {
+      renderReportWithSave(
+        'backtest-grid',
+        outputFormat,
+        buildStatusReport('No OHLCV data available for backtest.'),
+        options,
+        symbol
+      );
+      return;
+    }
+    if (mode !== 'spot' && mode !== 'trailing') {
+      throw new Error(`Unsupported mode "${mode}". Use spot or trailing.`);
+    }
+
+    const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
+    const grids = resolveProfiledNumber(options, 'grids', ['--grids'], profileDefaults.grids, 10);
+    const { low, high, allocation } = resolveGridParams(options, ohlcv, { grids });
+    const feeModel = resolveProfiledString(
+      options,
+      'feeModel',
+      ['--fee-model'],
+      profileDefaults.feeModel,
+      'flat',
+      feeDefaults.model
+    ).toLowerCase();
+    const slippageRate = resolveProfiledNumber(
+      options,
+      'slippageRate',
+      ['--slippage-rate'],
+      profileDefaults.slippageRate,
+      0,
+      feeDefaults.slippageRate
+    );
+    const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate }, feeDefaults);
+    const trailStepPercent = resolveProfiledOptionalNumber(
+      options,
+      'trailStepPercent',
+      ['--trail-step-percent'],
+      profileDefaults.trailStepPercent
+    );
+    const stopOnMa30 = resolveProfiledOptionalBoolean(
+      options,
+      'stopOnMa30',
+      ['--stop-on-ma30'],
+      profileDefaults.stopOnMa30
+    );
+    const stopOnLowCloses = resolveProfiledOptionalNumber(
+      options,
+      'stopOnLowCloses',
+      ['--stop-on-low-closes'],
+      profileDefaults.stopOnLowCloses
+    );
+    const commonOptions = {
+      ohlcv,
+      low,
+      high,
+      grids,
+      allocation,
+      ...feeOptions,
+      trailStepPercent,
+      stopOnMa30,
+      stopOnLowCloses,
+    };
+    const gridResult =
+      mode === 'trailing'
+        ? backtestTrailingGrid({
+            ...commonOptions,
+            sourceTimeframe: timeframe,
+            trailStepPercent: trailStepPercent ?? 0,
+            stopOnMa30,
+            stopOnLowCloses,
+          })
+        : runGridBacktest(commonOptions);
+    const report = {
+      title: 'Grid backtest report',
+      sections: [
+        {
+          title: 'Profile',
+          rows: buildProfileSummaryRows({
+            profile: profileName,
+            grids,
+            feeModel,
+            slippageRate,
+            trailStepPercent,
+            stopOnMa30,
+            stopOnLowCloses,
+          }),
+        },
+        {
+          title: 'Grid backtest metrics',
+          rows: buildMetricsRows(buildGridMetrics(gridResult)),
+        },
+      ],
+    };
+    if (shouldRenderAsciiPlot(options, outputFormat)) {
+      const plotPoints = Math.min(gridResult.equityCurve.length, 120);
+      if (plotPoints > 0) {
+        const chart = renderAsciiChartSeries([gridResult.equityCurve.slice(-plotPoints)]);
+        printAsciiPlot(outputFormat, `Equity curve (last ${plotPoints} points)`, chart);
+      }
+    }
+    if (shouldRenderPngPlot(options)) {
+      const priceLabels = ohlcv.map((candle) => new Date(candle.timestamp).toLocaleString());
+      const closeSeries = ohlcv.map((candle) => candle.close);
+      const ma30Series = sma(closeSeries, 30).map((value) => (Number.isFinite(value) ? value : null));
+      const pricePlotPath = buildPlotPath('backtest-grid', symbol, 'price-ma30');
+      await renderLineChartPNG(
+        priceLabels,
+        [
+          { label: 'Close', data: closeSeries, borderColor: 'rgba(75,192,192,1)' },
+          { label: 'MA30', data: ma30Series, borderColor: 'rgba(255,159,64,1)' },
+        ],
+        pricePlotPath,
+        { title: 'Close + MA30' }
+      );
+      console.log(`Saved plot -> ${pricePlotPath}`);
+
+      const equityLength = Math.min(gridResult.equityCurve.length, priceLabels.length);
+      const equityLabels = priceLabels.slice(0, equityLength);
+      const equitySeries = gridResult.equityCurve.slice(0, equityLength);
+      const equityPlotPath = buildPlotPath('backtest-grid', symbol, 'equity-curve');
+      await renderLineChartPNG(
+        equityLabels,
+        [{ label: 'Equity', data: equitySeries, borderColor: 'rgba(153,102,255,1)' }],
+        equityPlotPath,
+        { title: 'Equity curve' }
+      );
+      console.log(`Saved plot -> ${equityPlotPath}`);
+    }
+    renderReportWithSave('backtest-grid', outputFormat, report, options, symbol);
+  } catch (error) {
+    console.error('Error running grid backtest:', error);
+  }
+}
+
+async function runWizard(): Promise<void> {
+  const config = loadConfig();
+  const outputDefaults = config.output ?? {};
+  const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
+  const defaultSince = outputDefaults.since ?? '2024-01-01';
+  const defaultSource: OhlcvSource =
+    outputDefaults.ohlcvSource === 'cache' || outputDefaults.ohlcvSource === 'exchange'
+      ? outputDefaults.ohlcvSource
+      : 'exchange';
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const symbol = await promptInput(rl, 'Symbol', defaultSymbol);
+    const since = await promptInput(rl, 'Since (ISO)', defaultSince);
+    const until = await promptOptionalInput(rl, 'Until (ISO)', outputDefaults.until);
+    const goal = await promptChoice(rl, 'Цель', ['profit', 'turnover'] as const, 'profit');
+    const risk = await promptChoice(rl, 'Риск', ['safe', 'default', 'aggressive'] as const, 'default');
+    const source = await promptChoice(rl, 'Источник OHLCV', ['cache', 'exchange'] as const, defaultSource);
+    const profile = selectWizardProfile(goal, risk);
+    console.log(`Selected profile: ${profile}`);
+
+    const decideOptions: Record<string, unknown> = {
+      symbol,
+      since,
+      ohlcvSource: source,
+      profile,
+      output: 'text',
+    };
+    const decideArgs = ['decide', '--symbol', symbol, '--since', since, '--ohlcv-source', source, '--profile', profile];
+    if (until) {
+      decideOptions.until = until;
+      decideArgs.push('--until', until);
+    }
+    await runWithArgv(decideArgs, () => handleDecide(decideOptions));
+
+    const shouldRunBacktest = await promptYesNo(rl, 'Запустить backtest-grid? (y/n)', false);
+    if (shouldRunBacktest) {
+      const backtestOptions: Record<string, unknown> = {
+        symbol,
+        since,
+        ohlcvSource: source,
+        profile,
+        output: 'text',
+      };
+      const backtestArgs = [
+        'backtest-grid',
+        '--symbol',
+        symbol,
+        '--since',
+        since,
+        '--ohlcv-source',
+        source,
+        '--profile',
+        profile,
+      ];
+      if (until) {
+        backtestOptions.until = until;
+        backtestArgs.push('--until', until);
+      }
+      await runWithArgv(backtestArgs, () => handleBacktestGrid(backtestOptions));
+    }
+  } finally {
+    rl.close();
+  }
+}
+
 program
   .command('fetch-ohlcv')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
@@ -829,6 +1308,13 @@ program
   });
 
 program
+  .command('wizard')
+  .description('Interactive wizard to run decide and optionally backtest-grid.')
+  .action(async () => {
+    await runWizard();
+  });
+
+program
   .command('decide')
   .option('--profile <profile>', 'Profile name: default|promo|safe', 'default')
   .option('--config <path>', 'Config path')
@@ -855,160 +1341,7 @@ program
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .action(async (options) => {
-    try {
-      const outputFormat = readOutputFormat(options);
-      const config = loadConfig(readStringOption(options, 'config'));
-      const outputDefaults = config.output ?? {};
-      const feeDefaults = config.fees ?? {};
-      const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
-      const exchange = resolveConfigString(options, 'exchange', ['--exchange'], config.exchange, 'gate');
-      const symbol = resolveConfigString(options, 'symbol', ['--symbol'], defaultSymbol, 'RAVE/USDT');
-      const timeframe = resolveConfigString(options, 'timeframe', ['--timeframe'], outputDefaults.timeframe, '1m');
-      const limit = resolveConfigNumber(options, 'limit', ['--limit'], outputDefaults.limit, 1000);
-      const since = resolveConfigString(options, 'since', ['--since'], outputDefaults.since, '2024-01-01');
-      const until =
-        resolveConfigOptionalString(options, 'until', ['--until'], outputDefaults.until) ?? new Date().toISOString();
-      const ohlcvSource = resolveConfigString(
-        options,
-        'ohlcvSource',
-        ['--ohlcv-source'],
-        outputDefaults.ohlcvSource,
-        'exchange'
-      );
-      const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
-      const ohlcv = await resolveOhlcv({
-        exchange,
-        symbol,
-        timeframe: '15m',
-        since,
-        until,
-        limit: String(limit),
-        ohlcvSource,
-      });
-      if (!ohlcv.length) {
-        renderReportWithSave(
-          'decide',
-          outputFormat,
-          buildStatusReport('No OHLCV data available to decide.'),
-          options,
-          symbol
-        );
-        return;
-      }
-      const slopeWindow = parseNumber(readStringOption(options, 'slopeWindow'), 5);
-      const minSlope = parseNumber(readStringOption(options, 'minSlope'), 0.0001);
-      const minDistance = parseNumber(readStringOption(options, 'minDistance'), 0.001);
-      const regimeResult = detectRegime(ohlcv, { slopeWindow, minSlope, minDistance });
-      const confidence = calculateRegimeConfidence(regimeResult, { minSlope, minDistance });
-
-      const strategy =
-        regimeResult.regime === 'TREND' ? 'trailing' : regimeResult.regime === 'RANGE' ? 'spot' : 'no-trade';
-
-      const feeModel = resolveProfiledString(
-        options,
-        'feeModel',
-        ['--fee-model'],
-        profileDefaults.feeModel,
-        'flat',
-        feeDefaults.model
-      ).toLowerCase();
-      const slippageRate = resolveProfiledNumber(
-        options,
-        'slippageRate',
-        ['--slippage-rate'],
-        profileDefaults.slippageRate,
-        0,
-        feeDefaults.slippageRate
-      );
-      const feeInputs = resolveFeeInputs(options, feeDefaults, slippageRate);
-      const recommendedMode = strategy === 'no-trade' ? 'spot' : strategy;
-      const recommendedCommand = buildRecommendedCommand({
-        exchange,
-        symbol,
-        timeframe,
-        since,
-        until,
-        ohlcvSource,
-        profile: profileName,
-        feeModel,
-        feeRate: feeInputs.feeRate,
-        makerFeeRate: feeInputs.makerFeeRate,
-        takerFeeRate: feeInputs.takerFeeRate,
-        gtDiscountRate: feeInputs.gtDiscountRate,
-        voucherDiscountType: feeInputs.voucherDiscountType,
-        voucherDiscountValue: feeInputs.voucherDiscountValue ? String(feeInputs.voucherDiscountValue) : undefined,
-        minimumFee: feeInputs.minimumFee,
-        feeRoundingDecimals:
-          feeInputs.roundingDecimals === undefined ? undefined : String(feeInputs.roundingDecimals),
-        slippageRate,
-        mode: recommendedMode,
-      });
-      const recommendationTitle =
-        strategy === 'no-trade' ? 'Recommended command (no-trade, for evaluation only)' : 'Recommended command';
-      renderReportWithSave(
-        'decide',
-        outputFormat,
-        {
-        title: 'Decision report',
-        sections: [
-          {
-            title: 'Regime',
-            rows: {
-              symbol,
-              regime: regimeResult.regime,
-              slope: regimeResult.slope.toFixed(6),
-              distance: regimeResult.distance.toFixed(6),
-              confidence,
-            },
-          },
-          {
-            title: 'Strategy',
-            rows: {
-              strategy,
-              recommended_mode: recommendedMode,
-            },
-          },
-          {
-            title: 'Profile',
-            rows: buildProfileSummaryRows({
-              profile: profileName,
-              grids: profileDefaults.grids,
-              feeModel,
-              slippageRate,
-              trailStepPercent: profileDefaults.trailStepPercent,
-              stopOnMa30: profileDefaults.stopOnMa30,
-              stopOnLowCloses: profileDefaults.stopOnLowCloses,
-            }),
-          },
-          {
-            title: 'Fees',
-            rows: {
-              fee_model: feeModel,
-              fee_rate: feeInputs.feeRate ?? null,
-              maker_fee_rate: feeInputs.makerFeeRate ?? null,
-              taker_fee_rate: feeInputs.takerFeeRate ?? null,
-              gt_discount_rate: feeInputs.gtDiscountRate ?? null,
-              voucher_discount_type: feeInputs.voucherDiscountType ?? null,
-              voucher_discount_value: feeInputs.voucherDiscountValue ?? null,
-              minimum_fee: feeInputs.minimumFee ?? null,
-              fee_rounding_decimals: feeInputs.roundingDecimals ?? null,
-              slippage_rate: slippageRate ?? null,
-            },
-          },
-          {
-            title: recommendationTitle,
-            rows: {
-              command: recommendedCommand,
-            },
-          },
-        ],
-      },
-        options,
-        symbol
-      );
-    } catch (error) {
-      console.error('Error deciding strategy:', error);
-    }
+    await handleDecide(options);
   });
 
 program
@@ -1172,169 +1505,7 @@ program
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .action(async (options) => {
-    try {
-      const outputFormat = readOutputFormat(options);
-      const config = loadConfig(readStringOption(options, 'config'));
-      const outputDefaults = config.output ?? {};
-      const feeDefaults = config.fees ?? {};
-      const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
-      const exchange = resolveConfigString(options, 'exchange', ['--exchange'], config.exchange, 'gate');
-      const symbol = resolveConfigString(options, 'symbol', ['--symbol'], defaultSymbol, 'RAVE/USDT');
-      const timeframe = resolveConfigString(options, 'timeframe', ['--timeframe'], outputDefaults.timeframe, '1m');
-      const since = resolveConfigString(options, 'since', ['--since'], outputDefaults.since, '2025-12-12');
-      const until = resolveConfigOptionalString(options, 'until', ['--until'], outputDefaults.until);
-      const limit = resolveConfigNumber(options, 'limit', ['--limit'], outputDefaults.limit, 1000);
-      const ohlcvSource = resolveConfigString(
-        options,
-        'ohlcvSource',
-        ['--ohlcv-source'],
-        outputDefaults.ohlcvSource,
-        'exchange'
-      );
-      const mode = resolveConfigString(options, 'mode', ['--mode'], outputDefaults.mode, 'spot').toLowerCase();
-      const ohlcv = await resolveOhlcv({
-        exchange,
-        symbol,
-        timeframe,
-        since,
-        until,
-        limit: String(limit),
-        ohlcvSource,
-        rebuild: options.rebuild,
-      });
-      if (!ohlcv.length) {
-        renderReportWithSave(
-          'backtest-grid',
-          outputFormat,
-          buildStatusReport('No OHLCV data available for backtest.'),
-          options,
-          symbol
-        );
-        return;
-      }
-      if (mode !== 'spot' && mode !== 'trailing') {
-        throw new Error(`Unsupported mode "${mode}". Use spot or trailing.`);
-      }
-
-      const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
-      const grids = resolveProfiledNumber(options, 'grids', ['--grids'], profileDefaults.grids, 10);
-      const { low, high, allocation } = resolveGridParams(options, ohlcv, { grids });
-      const feeModel = resolveProfiledString(
-        options,
-        'feeModel',
-        ['--fee-model'],
-        profileDefaults.feeModel,
-        'flat',
-        feeDefaults.model
-      ).toLowerCase();
-      const slippageRate = resolveProfiledNumber(
-        options,
-        'slippageRate',
-        ['--slippage-rate'],
-        profileDefaults.slippageRate,
-        0,
-        feeDefaults.slippageRate
-      );
-      const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate }, feeDefaults);
-      const trailStepPercent = resolveProfiledOptionalNumber(
-        options,
-        'trailStepPercent',
-        ['--trail-step-percent'],
-        profileDefaults.trailStepPercent
-      );
-      const stopOnMa30 = resolveProfiledOptionalBoolean(
-        options,
-        'stopOnMa30',
-        ['--stop-on-ma30'],
-        profileDefaults.stopOnMa30
-      );
-      const stopOnLowCloses = resolveProfiledOptionalNumber(
-        options,
-        'stopOnLowCloses',
-        ['--stop-on-low-closes'],
-        profileDefaults.stopOnLowCloses
-      );
-      const commonOptions = {
-        ohlcv,
-        low,
-        high,
-        grids,
-        allocation,
-        ...feeOptions,
-        trailStepPercent,
-        stopOnMa30,
-        stopOnLowCloses,
-      };
-      const gridResult =
-        mode === 'trailing'
-          ? backtestTrailingGrid({
-              ...commonOptions,
-              sourceTimeframe: timeframe,
-              trailStepPercent: trailStepPercent ?? 0,
-              stopOnMa30,
-              stopOnLowCloses,
-            })
-          : runGridBacktest(commonOptions);
-      const report = {
-        title: 'Grid backtest report',
-        sections: [
-          {
-            title: 'Profile',
-            rows: buildProfileSummaryRows({
-              profile: profileName,
-              grids,
-              feeModel,
-              slippageRate,
-              trailStepPercent,
-              stopOnMa30,
-              stopOnLowCloses,
-            }),
-          },
-          {
-            title: 'Grid backtest metrics',
-            rows: buildMetricsRows(buildGridMetrics(gridResult)),
-          },
-        ],
-      };
-      if (shouldRenderAsciiPlot(options, outputFormat)) {
-        const plotPoints = Math.min(gridResult.equityCurve.length, 120);
-        if (plotPoints > 0) {
-          const chart = renderAsciiChartSeries([gridResult.equityCurve.slice(-plotPoints)]);
-          printAsciiPlot(outputFormat, `Equity curve (last ${plotPoints} points)`, chart);
-        }
-      }
-      if (shouldRenderPngPlot(options)) {
-        const priceLabels = ohlcv.map((candle) => new Date(candle.timestamp).toLocaleString());
-        const closeSeries = ohlcv.map((candle) => candle.close);
-        const ma30Series = sma(closeSeries, 30).map((value) => (Number.isFinite(value) ? value : null));
-        const pricePlotPath = buildPlotPath('backtest-grid', symbol, 'price-ma30');
-        await renderLineChartPNG(
-          priceLabels,
-          [
-            { label: 'Close', data: closeSeries, borderColor: 'rgba(75,192,192,1)' },
-            { label: 'MA30', data: ma30Series, borderColor: 'rgba(255,159,64,1)' },
-          ],
-          pricePlotPath,
-          { title: 'Close + MA30' }
-        );
-        console.log(`Saved plot -> ${pricePlotPath}`);
-
-        const equityLength = Math.min(gridResult.equityCurve.length, priceLabels.length);
-        const equityLabels = priceLabels.slice(0, equityLength);
-        const equitySeries = gridResult.equityCurve.slice(0, equityLength);
-        const equityPlotPath = buildPlotPath('backtest-grid', symbol, 'equity-curve');
-        await renderLineChartPNG(
-          equityLabels,
-          [{ label: 'Equity', data: equitySeries, borderColor: 'rgba(153,102,255,1)' }],
-          equityPlotPath,
-          { title: 'Equity curve' }
-        );
-        console.log(`Saved plot -> ${equityPlotPath}`);
-      }
-      renderReportWithSave('backtest-grid', outputFormat, report, options, symbol);
-    } catch (error) {
-      console.error('Error running grid backtest:', error);
-    }
+    await handleBacktestGrid(options);
   });
 
 program
