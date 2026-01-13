@@ -1258,7 +1258,7 @@ program
 Examples:
   $ npm start -- analysis:analyze-regime --exchange gate --symbol RAVE/USDT --since 2024-01-01
   $ npm start -- backtest-grid --symbol RAVE/USDT --since 2024-01-01 --mode spot
-  $ npm start -- compare ./data/ledger.csv --symbol RAVE/USDT
+  $ npm start -- compare --ledger ./data/ledger.csv --symbol RAVE/USDT
   $ npm start -- decide --profile promo --symbol RAVE/USDT
 `
   )
@@ -1771,20 +1771,6 @@ program
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
-  .option('--grid-low <low>', 'Grid low price')
-  .option('--grid-high <high>', 'Grid high price')
-  .option('--grids <grids>', 'Grid levels', '10')
-  .option('--allocation <allocation>', 'Allocation', '1000')
-  .option('--fee-model <model>', 'Fee model: flat|maker-taker', 'flat')
-  .option('--fee-rate <feeRate>', 'Grid fee rate', '0.002')
-  .option('--maker-fee-rate <rate>', 'Maker fee rate', '0.001')
-  .option('--taker-fee-rate <rate>', 'Taker fee rate', '0.002')
-  .option('--gt-discount-rate <rate>', 'GT discount rate (percent)', '0')
-  .option('--voucher-discount-type <type>', 'Voucher discount type: percent|fixed')
-  .option('--voucher-discount-value <value>', 'Voucher discount value')
-  .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
-  .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
-  .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
@@ -1820,39 +1806,6 @@ Examples:
 
         const { metrics: ledgerMetrics, feesBreakdown } = buildLedgerMetrics(summary);
 
-        const ohlcv = await resolveOhlcv({
-          exchange: options.exchange,
-          symbol: options.symbol,
-          timeframe: options.timeframe,
-          since: summary.startTime.toISOString(),
-          until: summary.endTime.toISOString(),
-          ohlcvSource: options.ohlcvSource,
-          ohlcvLimit: options.ohlcvLimit,
-        });
-        const endTimeMs = summary.endTime.getTime();
-        const periodCandles = ohlcv.filter((candle) => candle.timestamp <= endTimeMs);
-        if (!periodCandles.length) {
-          renderReportWithSave(
-            'ledger:import-ledger',
-            outputFormat,
-            buildStatusReport('No OHLCV data available for the ledger period.'),
-            options,
-            options.symbol
-          );
-          return;
-        }
-
-        const { low, high, grids, allocation } = resolveGridParams(options, periodCandles);
-        const feeOptions = resolveFeeOptions(options);
-        const gridResult = runGridBacktest({
-          ohlcv: periodCandles,
-          low,
-          high,
-          grids,
-          allocation,
-          ...feeOptions,
-        });
-
         const report = {
           title: 'Ledger import report',
           sections: [
@@ -1878,16 +1831,6 @@ Examples:
             {
               title: 'Ledger metrics',
               rows: buildMetricsRows(ledgerMetrics),
-            },
-            {
-              title: 'Grid backtest metrics',
-              rows: buildMetricsRows(buildGridMetrics(gridResult)),
-            },
-            {
-              title: 'PnL delta',
-              rows: {
-                ledger_net_minus_grid_net: (ledgerMetrics.pnlNet - gridResult.pnlNet).toFixed(4),
-              },
             },
           ],
         };
@@ -1947,11 +1890,13 @@ Examples:
 
 program
   .command('compare')
-  .argument('<file>', 'Path to CSV file')
+  .requiredOption('--ledger <file>', 'Path to CSV file')
   .option('--profile <profile>', 'Profile name: default|promo|safe', 'default')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
+  .option('--since <since>', 'Start date (ISO)')
+  .option('--until <until>', 'End date (ISO)')
   .option('--grid-low <low>', 'Grid low price')
   .option('--grid-high <high>', 'Grid high price')
   .option('--grids <grids>', 'Grid levels', '10')
@@ -1966,7 +1911,7 @@ program
   .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
   .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
-  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
+  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'cache')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .option('--plot <type>', 'Plot type: png')
@@ -1976,16 +1921,20 @@ program
     'after',
     `
 Examples:
-  $ npm start -- compare ./data/ledger.csv --symbol RAVE/USDT
-  $ npm start -- compare ./data/ledger.csv --profile promo --symbol RAVE/USDT --plot png
+  $ npm start -- compare --ledger ./data/ledger.csv --symbol RAVE/USDT
+  $ npm start -- compare --ledger ./data/ledger.csv --profile promo --symbol RAVE/USDT --plot png
 `
   )
-  .action(async (file, options) => {
+  .action(async (options) => {
     try {
       const outputFormat = readOutputFormat(options);
       const symbol = readStringOption(options, 'symbol') ?? 'RAVE/USDT';
       const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
-      const entries = importLedger(file);
+      const ledgerPath = readStringOption(options, 'ledger');
+      if (!ledgerPath) {
+        throw new Error('Ledger path is required. Use --ledger <file>.');
+      }
+      const entries = importLedger(ledgerPath);
       const feeMode = readLedgerFeeMode(options);
       const gtFeeResolution =
         feeMode === 'ohlcv' ? await resolveGtFeeQuoteResolver(entries, options) : { resolver: undefined, ohlcvCount: 0 };
@@ -2004,12 +1953,16 @@ Examples:
 
       const { metrics: ledgerMetrics, feesBreakdown } = buildLedgerMetrics(summary);
 
+      const sinceOption = readStringOption(options, 'since');
+      const untilOption = readStringOption(options, 'until');
+      const backtestSince = sinceOption ?? summary.startTime.toISOString();
+      const backtestUntil = untilOption ?? summary.endTime.toISOString();
       const ohlcv = await resolveOhlcv({
         exchange: options.exchange,
         symbol,
         timeframe: options.timeframe,
-        since: summary.startTime.toISOString(),
-        until: summary.endTime.toISOString(),
+        since: backtestSince,
+        until: backtestUntil,
         ohlcvSource: options.ohlcvSource,
         ohlcvLimit: options.ohlcvLimit,
       });
@@ -2017,19 +1970,28 @@ Examples:
         renderReportWithSave(
           'compare',
           outputFormat,
-          buildStatusReport('No OHLCV data available for the ledger period.'),
+          buildStatusReport('No OHLCV data available for the requested period.'),
           options,
           symbol
         );
         return;
       }
-      const endTimeMs = summary.endTime.getTime();
-      const periodCandles = ohlcv.filter((candle) => candle.timestamp <= endTimeMs);
+      const startTimeMs = Date.parse(backtestSince);
+      const endTimeMs = Date.parse(backtestUntil);
+      const periodCandles = ohlcv.filter((candle) => {
+        if (Number.isFinite(startTimeMs) && candle.timestamp < startTimeMs) {
+          return false;
+        }
+        if (Number.isFinite(endTimeMs) && candle.timestamp > endTimeMs) {
+          return false;
+        }
+        return true;
+      });
       if (!periodCandles.length) {
         renderReportWithSave(
           'compare',
           outputFormat,
-          buildStatusReport('No OHLCV data available for the ledger period.'),
+          buildStatusReport('No OHLCV data available for the requested period.'),
           options,
           symbol
         );
@@ -2080,6 +2042,14 @@ Examples:
                 summary.feeMode === 'ohlcv' ? summary.totalFeesInQuoteWithGt.toFixed(6) : null,
               gt_fee_price_missing: summary.feeMode === 'ohlcv' ? summary.gtFeeMissingCount : null,
               fees_breakdown: feesBreakdown || 'n/a',
+            },
+          },
+          {
+            title: 'Backtest window',
+            rows: {
+              since: backtestSince,
+              until: backtestUntil,
+              ohlcv_source: options.ohlcvSource,
             },
           },
           {
