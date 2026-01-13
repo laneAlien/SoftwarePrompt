@@ -9,6 +9,14 @@ import { getProfileDefaults } from './core/profiles';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
 import { FeeDefaults, loadConfig } from './core/config';
+import {
+  OutputFormat,
+  ReportPayload,
+  ReportValue,
+  printJsonReport,
+  printMarkdownReport,
+  printTextReport,
+} from './core/output';
 
 const program = new Command();
 
@@ -21,6 +29,43 @@ interface OutputMetrics {
   feeRatio: number;
   trades: number;
   turnover: number;
+}
+
+function normalizeOutputFormat(value: string | undefined): OutputFormat {
+  if (value === 'json' || value === 'md' || value === 'text') {
+    return value;
+  }
+  return 'text';
+}
+
+function readOutputFormat(options: Record<string, unknown>): OutputFormat {
+  return normalizeOutputFormat(readStringOption(options, 'output'));
+}
+
+function renderReport(format: OutputFormat, report: ReportPayload): void {
+  if (format === 'json') {
+    printJsonReport(report);
+    return;
+  }
+  if (format === 'md') {
+    printMarkdownReport(report);
+    return;
+  }
+  printTextReport(report);
+}
+
+function buildStatusReport(message: string): ReportPayload {
+  return {
+    title: 'Status',
+    sections: [
+      {
+        title: 'Message',
+        rows: {
+          message,
+        },
+      },
+    ],
+  };
 }
 
 interface GridFeeOptions {
@@ -332,14 +377,15 @@ function buildRecommendedCommand(params: {
   return parts.filter((part): part is string => Boolean(part)).join(' ');
 }
 
-function formatMetrics(label: string, metrics: OutputMetrics): void {
-  console.log(`\n${label}`);
-  console.log(`pnl_gross: ${metrics.pnlGross.toFixed(4)}`);
-  console.log(`pnl_net: ${metrics.pnlNet.toFixed(4)}`);
-  console.log(`fees_total: ${metrics.feesTotal.toFixed(4)}`);
-  console.log(`fee_ratio: ${metrics.feeRatio.toFixed(6)}`);
-  console.log(`trades: ${metrics.trades}`);
-  console.log(`turnover: ${metrics.turnover.toFixed(4)}`);
+function buildMetricsRows(metrics: OutputMetrics): Record<string, ReportValue> {
+  return {
+    pnl_gross: metrics.pnlGross.toFixed(4),
+    pnl_net: metrics.pnlNet.toFixed(4),
+    fees_total: metrics.feesTotal.toFixed(4),
+    fee_ratio: metrics.feeRatio.toFixed(6),
+    trades: metrics.trades,
+    turnover: metrics.turnover.toFixed(4),
+  };
 }
 
 function buildLedgerMetrics(summary: LedgerSummary): { metrics: OutputMetrics; feesBreakdown: string; feesTotal: number } {
@@ -491,7 +537,7 @@ function resolveFeeOptions(
   };
 }
 
-function formatProfileSummary(params: {
+function buildProfileSummaryRows(params: {
   profile: string;
   grids?: number;
   feeModel?: string;
@@ -499,20 +545,16 @@ function formatProfileSummary(params: {
   trailStepPercent?: number;
   stopOnMa30?: boolean;
   stopOnLowCloses?: number;
-}): void {
-  const formatValue = (value: number | boolean | string | undefined): string =>
-    value === undefined ? 'n/a' : String(value);
-  console.log(`Profile: ${params.profile}`);
-  console.log(
-    [
-      `grids=${formatValue(params.grids)}`,
-      `fee_model=${formatValue(params.feeModel)}`,
-      `slippage_rate=${formatValue(params.slippageRate)}`,
-      `trail_step_percent=${formatValue(params.trailStepPercent)}`,
-      `stop_on_ma30=${formatValue(params.stopOnMa30)}`,
-      `stop_on_low_closes=${formatValue(params.stopOnLowCloses)}`,
-    ].join(' | ')
-  );
+}): Record<string, ReportValue> {
+  return {
+    profile: params.profile,
+    grids: params.grids ?? null,
+    fee_model: params.feeModel ?? null,
+    slippage_rate: params.slippageRate ?? null,
+    trail_step_percent: params.trailStepPercent ?? null,
+    stop_on_ma30: params.stopOnMa30 ?? null,
+    stop_on_low_closes: params.stopOnLowCloses ?? null,
+  };
 }
 
 function resolveOhlcvCachePath(exchange: string, symbol: string, timeframe: string): string {
@@ -597,12 +639,18 @@ program
   .option('--slope-window <number>', 'MA30 slope window', '5')
   .option('--min-slope <number>', 'Minimum MA30 slope to confirm trend', '0.0001')
   .option('--min-distance <number>', 'Minimum price distance to MA30', '0.001')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
   .action(async (options) => {
+    const outputFormat = readOutputFormat(options);
     const limit = parseInt(options.limit, 10);
     const ohlcv = await fetchOHLCV(options.exchange, options.symbol, '15m', options.since, limit, {
       rebuildCache: false,
       until: options.until,
     });
+    if (!ohlcv.length) {
+      renderReport(outputFormat, buildStatusReport('No OHLCV data available to analyze regime.'));
+      return;
+    }
     const parsedSlopeWindow = Number(options.slopeWindow);
     const slopeWindow = Number.isFinite(parsedSlopeWindow) ? parsedSlopeWindow : 5;
     const parsedMinSlope = Number(options.minSlope);
@@ -612,11 +660,23 @@ program
     const { regime, slope, distance } = detectRegime(ohlcv, { slopeWindow, minSlope, minDistance });
     const periodStart = ohlcv.length ? new Date(ohlcv[0].timestamp).toISOString() : 'n/a';
     const periodEnd = ohlcv.length ? new Date(ohlcv[ohlcv.length - 1].timestamp).toISOString() : 'n/a';
-    console.log(
-      `Current regime for ${options.symbol}: ${regime} | slope: ${slope.toFixed(6)} | distance: ${distance.toFixed(
-        6
-      )} | period (15m): ${periodStart} → ${periodEnd}`
-    );
+    renderReport(outputFormat, {
+      title: 'Regime analysis',
+      sections: [
+        {
+          title: 'Summary',
+          rows: {
+            symbol: options.symbol,
+            regime,
+            slope: slope.toFixed(6),
+            distance: distance.toFixed(6),
+            timeframe: '15m',
+            period_start: periodStart,
+            period_end: periodEnd,
+          },
+        },
+      ],
+    });
   });
 
 program
@@ -643,8 +703,10 @@ program
   .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
   .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
   .action(async (options) => {
     try {
+      const outputFormat = readOutputFormat(options);
       const config = loadConfig(readStringOption(options, 'config'));
       const outputDefaults = config.output ?? {};
       const feeDefaults = config.fees ?? {};
@@ -674,7 +736,7 @@ program
         ohlcvSource,
       });
       if (!ohlcv.length) {
-        console.log('No OHLCV data available to decide.');
+        renderReport(outputFormat, buildStatusReport('No OHLCV data available to decide.'));
         return;
       }
       const slopeWindow = parseNumber(readStringOption(options, 'slopeWindow'), 5);
@@ -682,15 +744,9 @@ program
       const minDistance = parseNumber(readStringOption(options, 'minDistance'), 0.001);
       const regimeResult = detectRegime(ohlcv, { slopeWindow, minSlope, minDistance });
       const confidence = calculateRegimeConfidence(regimeResult, { minSlope, minDistance });
-      console.log(
-        `Regime: ${regimeResult.regime} | slope: ${regimeResult.slope.toFixed(6)} | distance: ${regimeResult.distance.toFixed(
-          6
-        )} | confidence: ${confidence}`
-      );
 
       const strategy =
         regimeResult.regime === 'TREND' ? 'trailing' : regimeResult.regime === 'RANGE' ? 'spot' : 'no-trade';
-      console.log(`Strategy: ${strategy}`);
 
       const feeModel = resolveProfiledString(
         options,
@@ -709,15 +765,6 @@ program
         feeDefaults.slippageRate
       );
       const feeInputs = resolveFeeInputs(options, feeDefaults, slippageRate);
-      formatProfileSummary({
-        profile: profileName,
-        grids: profileDefaults.grids,
-        feeModel,
-        slippageRate,
-        trailStepPercent: profileDefaults.trailStepPercent,
-        stopOnMa30: profileDefaults.stopOnMa30,
-        stopOnLowCloses: profileDefaults.stopOnLowCloses,
-      });
       const recommendedMode = strategy === 'no-trade' ? 'spot' : strategy;
       const recommendedCommand = buildRecommendedCommand({
         exchange,
@@ -740,13 +787,63 @@ program
         slippageRate,
         mode: recommendedMode,
       });
-
-      if (strategy === 'no-trade') {
-        console.log('Recommended command (no-trade, for evaluation only):');
-      } else {
-        console.log('Recommended command:');
-      }
-      console.log(recommendedCommand);
+      const recommendationTitle =
+        strategy === 'no-trade' ? 'Recommended command (no-trade, for evaluation only)' : 'Recommended command';
+      renderReport(outputFormat, {
+        title: 'Decision report',
+        sections: [
+          {
+            title: 'Regime',
+            rows: {
+              symbol,
+              regime: regimeResult.regime,
+              slope: regimeResult.slope.toFixed(6),
+              distance: regimeResult.distance.toFixed(6),
+              confidence,
+            },
+          },
+          {
+            title: 'Strategy',
+            rows: {
+              strategy,
+              recommended_mode: recommendedMode,
+            },
+          },
+          {
+            title: 'Profile',
+            rows: buildProfileSummaryRows({
+              profile: profileName,
+              grids: profileDefaults.grids,
+              feeModel,
+              slippageRate,
+              trailStepPercent: profileDefaults.trailStepPercent,
+              stopOnMa30: profileDefaults.stopOnMa30,
+              stopOnLowCloses: profileDefaults.stopOnLowCloses,
+            }),
+          },
+          {
+            title: 'Fees',
+            rows: {
+              fee_model: feeModel,
+              fee_rate: feeInputs.feeRate ?? null,
+              maker_fee_rate: feeInputs.makerFeeRate ?? null,
+              taker_fee_rate: feeInputs.takerFeeRate ?? null,
+              gt_discount_rate: feeInputs.gtDiscountRate ?? null,
+              voucher_discount_type: feeInputs.voucherDiscountType ?? null,
+              voucher_discount_value: feeInputs.voucherDiscountValue ?? null,
+              minimum_fee: feeInputs.minimumFee ?? null,
+              fee_rounding_decimals: feeInputs.roundingDecimals ?? null,
+              slippage_rate: slippageRate ?? null,
+            },
+          },
+          {
+            title: recommendationTitle,
+            rows: {
+              command: recommendedCommand,
+            },
+          },
+        ],
+      });
     } catch (error) {
       console.error('Error deciding strategy:', error);
     }
@@ -775,40 +872,22 @@ program
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
   .action(async (file, options) => {
       try {
+        const outputFormat = readOutputFormat(options);
         const entries = importLedger(file);
         const feeMode = readLedgerFeeMode(options);
         const gtFeeResolution =
           feeMode === 'ohlcv' ? await resolveGtFeeQuoteResolver(entries, options) : { resolver: undefined, ohlcvCount: 0 };
         const gtFeeQuoteResolver = gtFeeResolution.resolver;
         const summary = analyzeLedger(entries, { feeMode, gtFeeQuoteResolver });
-        console.log(`Imported ${entries.length} entries from ledger.`);
         if (!summary.startTime || !summary.endTime) {
-          console.log('Not enough trade data to build a report.');
+          renderReport(outputFormat, buildStatusReport('Not enough trade data to build a report.'));
           return;
         }
 
         const { metrics: ledgerMetrics, feesBreakdown } = buildLedgerMetrics(summary);
-
-        console.log('\nLedger report');
-        console.log(`Period: ${summary.startTime.toISOString()} - ${summary.endTime.toISOString()}`);
-        console.log(`Avg profit/trade: ${summary.avgProfitPerTrade.toFixed(4)} (quote)`);
-        if (summary.feeMode === 'ohlcv' && !gtFeeQuoteResolver) {
-          console.log('GT/USDT OHLCV data unavailable; GT fees reported separately.');
-        }
-        console.log(`fees_total_quote: ${summary.totalFeesInQuote.toFixed(6)}`);
-        console.log(`fees_total_gt: ${summary.totalFeesInGt.toFixed(6)}`);
-        if (summary.feeMode === 'ohlcv') {
-          console.log(`gt_fees_quote: ${summary.gtFeeInQuote.toFixed(6)}`);
-          console.log(`fees_total_quote_equiv: ${summary.totalFeesInQuoteWithGt.toFixed(6)}`);
-          if (summary.gtFeeMissingCount > 0) {
-            console.log(`gt_fee_price_missing: ${summary.gtFeeMissingCount}`);
-          }
-        }
-        console.log(`Fees: ${feesBreakdown || 'n/a'}`);
-        console.log(`Trades/hour: ${summary.tradesPerHour.toFixed(2)}`);
-        formatMetrics('Ledger metrics', ledgerMetrics);
 
         const ohlcv = await resolveOhlcv({
           exchange: options.exchange,
@@ -822,7 +901,7 @@ program
         const endTimeMs = summary.endTime.getTime();
         const periodCandles = ohlcv.filter((candle) => candle.timestamp <= endTimeMs);
         if (!periodCandles.length) {
-          console.log('No OHLCV data available for the ledger period.');
+          renderReport(outputFormat, buildStatusReport('No OHLCV data available for the ledger period.'));
           return;
         }
 
@@ -837,8 +916,44 @@ program
           ...feeOptions,
         });
 
-        formatMetrics('Grid backtest metrics', buildGridMetrics(gridResult));
-        console.log(`PnL delta (ledger net vs grid net): ${(ledgerMetrics.pnlNet - gridResult.pnlNet).toFixed(4)}`);
+        renderReport(outputFormat, {
+          title: 'Ledger import report',
+          sections: [
+            {
+              title: 'Ledger summary',
+              rows: {
+                entries: entries.length,
+                period_start: summary.startTime.toISOString(),
+                period_end: summary.endTime.toISOString(),
+                avg_profit_per_trade_quote: summary.avgProfitPerTrade.toFixed(4),
+                trades_per_hour: summary.tradesPerHour.toFixed(2),
+                fee_mode: summary.feeMode,
+                gt_fee_quote_available: summary.feeMode === 'ohlcv' ? Boolean(gtFeeQuoteResolver) : null,
+                fees_total_quote: summary.totalFeesInQuote.toFixed(6),
+                fees_total_gt: summary.totalFeesInGt.toFixed(6),
+                gt_fees_quote: summary.feeMode === 'ohlcv' ? summary.gtFeeInQuote.toFixed(6) : null,
+                fees_total_quote_equiv:
+                  summary.feeMode === 'ohlcv' ? summary.totalFeesInQuoteWithGt.toFixed(6) : null,
+                gt_fee_price_missing: summary.feeMode === 'ohlcv' ? summary.gtFeeMissingCount : null,
+                fees_breakdown: feesBreakdown || 'n/a',
+              },
+            },
+            {
+              title: 'Ledger metrics',
+              rows: buildMetricsRows(ledgerMetrics),
+            },
+            {
+              title: 'Grid backtest metrics',
+              rows: buildMetricsRows(buildGridMetrics(gridResult)),
+            },
+            {
+              title: 'PnL delta',
+              rows: {
+                ledger_net_minus_grid_net: (ledgerMetrics.pnlNet - gridResult.pnlNet).toFixed(4),
+              },
+            },
+          ],
+        });
       } catch (error) {
         console.error('Error importing ledger:', error);
       }
@@ -877,8 +992,10 @@ program
   .option('--trail-step-percent <percent>', 'Trailing grid step percent')
   .option('--stop-on-ma30 <enabled>', 'Stop when close drops below MA30 (true|false)')
   .option('--stop-on-low-closes <count>', 'Stop after N closes below grid low')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
   .action(async (options) => {
     try {
+      const outputFormat = readOutputFormat(options);
       const config = loadConfig(readStringOption(options, 'config'));
       const outputDefaults = config.output ?? {};
       const feeDefaults = config.fees ?? {};
@@ -908,7 +1025,7 @@ program
         rebuild: options.rebuild,
       });
       if (!ohlcv.length) {
-        console.log('No OHLCV data available for backtest.');
+        renderReport(outputFormat, buildStatusReport('No OHLCV data available for backtest.'));
         return;
       }
       if (mode !== 'spot' && mode !== 'trailing') {
@@ -953,15 +1070,6 @@ program
         ['--stop-on-low-closes'],
         profileDefaults.stopOnLowCloses
       );
-      formatProfileSummary({
-        profile: profileName,
-        grids,
-        feeModel,
-        slippageRate,
-        trailStepPercent,
-        stopOnMa30,
-        stopOnLowCloses,
-      });
       const commonOptions = {
         ohlcv,
         low,
@@ -983,7 +1091,27 @@ program
               stopOnLowCloses,
             })
           : runGridBacktest(commonOptions);
-      formatMetrics('Grid backtest metrics', buildGridMetrics(gridResult));
+      renderReport(outputFormat, {
+        title: 'Grid backtest report',
+        sections: [
+          {
+            title: 'Profile',
+            rows: buildProfileSummaryRows({
+              profile: profileName,
+              grids,
+              feeModel,
+              slippageRate,
+              trailStepPercent,
+              stopOnMa30,
+              stopOnLowCloses,
+            }),
+          },
+          {
+            title: 'Grid backtest metrics',
+            rows: buildMetricsRows(buildGridMetrics(gridResult)),
+          },
+        ],
+      });
     } catch (error) {
       console.error('Error running grid backtest:', error);
     }
@@ -1013,8 +1141,10 @@ program
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
   .action(async (file, options) => {
     try {
+      const outputFormat = readOutputFormat(options);
       const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
       const entries = importLedger(file);
       const feeMode = readLedgerFeeMode(options);
@@ -1022,29 +1152,12 @@ program
         feeMode === 'ohlcv' ? await resolveGtFeeQuoteResolver(entries, options) : { resolver: undefined, ohlcvCount: 0 };
       const gtFeeQuoteResolver = gtFeeResolution.resolver;
       const summary = analyzeLedger(entries, { feeMode, gtFeeQuoteResolver });
-      console.log(`Imported ${entries.length} entries from ledger.`);
       if (!summary.startTime || !summary.endTime) {
-        console.log('Not enough trade data to build a report.');
+        renderReport(outputFormat, buildStatusReport('Not enough trade data to build a report.'));
         return;
       }
 
       const { metrics: ledgerMetrics, feesBreakdown } = buildLedgerMetrics(summary);
-      console.log('\nLedger report');
-      console.log(`Period: ${summary.startTime.toISOString()} - ${summary.endTime.toISOString()}`);
-      if (summary.feeMode === 'ohlcv' && !gtFeeQuoteResolver) {
-        console.log('GT/USDT OHLCV data unavailable; GT fees reported separately.');
-      }
-      console.log(`fees_total_quote: ${summary.totalFeesInQuote.toFixed(6)}`);
-      console.log(`fees_total_gt: ${summary.totalFeesInGt.toFixed(6)}`);
-      if (summary.feeMode === 'ohlcv') {
-        console.log(`gt_fees_quote: ${summary.gtFeeInQuote.toFixed(6)}`);
-        console.log(`fees_total_quote_equiv: ${summary.totalFeesInQuoteWithGt.toFixed(6)}`);
-        if (summary.gtFeeMissingCount > 0) {
-          console.log(`gt_fee_price_missing: ${summary.gtFeeMissingCount}`);
-        }
-      }
-      console.log(`Fees: ${feesBreakdown || 'n/a'}`);
-      formatMetrics('Ledger metrics', ledgerMetrics);
 
       const ohlcv = await resolveOhlcv({
         exchange: options.exchange,
@@ -1056,13 +1169,13 @@ program
         ohlcvLimit: options.ohlcvLimit,
       });
       if (!ohlcv.length) {
-        console.log('No OHLCV data available for the ledger period.');
+        renderReport(outputFormat, buildStatusReport('No OHLCV data available for the ledger period.'));
         return;
       }
       const endTimeMs = summary.endTime.getTime();
       const periodCandles = ohlcv.filter((candle) => candle.timestamp <= endTimeMs);
       if (!periodCandles.length) {
-        console.log('No OHLCV data available for the ledger period.');
+        renderReport(outputFormat, buildStatusReport('No OHLCV data available for the ledger period.'));
         return;
       }
 
@@ -1083,15 +1196,6 @@ program
         0
       );
       const feeOptions = resolveFeeOptions(options, { feeModel, slippageRate });
-      formatProfileSummary({
-        profile: profileName,
-        grids,
-        feeModel,
-        slippageRate,
-        trailStepPercent: profileDefaults.trailStepPercent,
-        stopOnMa30: profileDefaults.stopOnMa30,
-        stopOnLowCloses: profileDefaults.stopOnLowCloses,
-      });
       const gridResult = runGridBacktest({
         ohlcv: periodCandles,
         low,
@@ -1101,8 +1205,54 @@ program
         ...feeOptions,
       });
 
-      formatMetrics('Grid backtest metrics', buildGridMetrics(gridResult));
-      console.log(`PnL delta (ledger net vs grid net): ${(ledgerMetrics.pnlNet - gridResult.pnlNet).toFixed(4)}`);
+      renderReport(outputFormat, {
+        title: 'Ledger comparison report',
+        sections: [
+          {
+            title: 'Ledger summary',
+            rows: {
+              entries: entries.length,
+              period_start: summary.startTime.toISOString(),
+              period_end: summary.endTime.toISOString(),
+              fee_mode: summary.feeMode,
+              gt_fee_quote_available: summary.feeMode === 'ohlcv' ? Boolean(gtFeeQuoteResolver) : null,
+              fees_total_quote: summary.totalFeesInQuote.toFixed(6),
+              fees_total_gt: summary.totalFeesInGt.toFixed(6),
+              gt_fees_quote: summary.feeMode === 'ohlcv' ? summary.gtFeeInQuote.toFixed(6) : null,
+              fees_total_quote_equiv:
+                summary.feeMode === 'ohlcv' ? summary.totalFeesInQuoteWithGt.toFixed(6) : null,
+              gt_fee_price_missing: summary.feeMode === 'ohlcv' ? summary.gtFeeMissingCount : null,
+              fees_breakdown: feesBreakdown || 'n/a',
+            },
+          },
+          {
+            title: 'Ledger metrics',
+            rows: buildMetricsRows(ledgerMetrics),
+          },
+          {
+            title: 'Profile',
+            rows: buildProfileSummaryRows({
+              profile: profileName,
+              grids,
+              feeModel,
+              slippageRate,
+              trailStepPercent: profileDefaults.trailStepPercent,
+              stopOnMa30: profileDefaults.stopOnMa30,
+              stopOnLowCloses: profileDefaults.stopOnLowCloses,
+            }),
+          },
+          {
+            title: 'Grid backtest metrics',
+            rows: buildMetricsRows(buildGridMetrics(gridResult)),
+          },
+          {
+            title: 'PnL delta',
+            rows: {
+              ledger_net_minus_grid_net: (ledgerMetrics.pnlNet - gridResult.pnlNet).toFixed(4),
+            },
+          },
+        ],
+      });
     } catch (error) {
       console.error('Error comparing ledger to backtest:', error);
     }
