@@ -225,12 +225,17 @@ program
   .command('analyze-regime')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
+  .option('--since <since>', 'Start date (ISO)', '2024-01-01')
+  .option('--until <until>', 'End date (ISO)')
+  .option('--limit <limit>', 'Max candles', '1000')
   .option('--slope-window <number>', 'MA30 slope window', '5')
   .option('--min-slope <number>', 'Minimum MA30 slope to confirm trend', '0.0001')
   .option('--min-distance <number>', 'Minimum price distance to MA30', '0.001')
   .action(async (options) => {
-    const ohlcv = await fetchOHLCV(options.exchange, options.symbol, '15m', '2024-01-01', 1000, {
+    const limit = parseInt(options.limit, 10);
+    const ohlcv = await fetchOHLCV(options.exchange, options.symbol, '15m', options.since, limit, {
       rebuildCache: false,
+      until: options.until,
     });
     const parsedSlopeWindow = Number(options.slopeWindow);
     const slopeWindow = Number.isFinite(parsedSlopeWindow) ? parsedSlopeWindow : 5;
