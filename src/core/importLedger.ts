@@ -28,9 +28,19 @@ export interface LedgerSummary {
     totalFeesInQuote: number;
     totalFeesInGt: number;
     gtFeeInQuote: number;
+    totalFeesInQuoteWithGt: number;
     gtPriceInQuote: number | null;
+    gtFeeMissingCount: number;
+    feeMode: LedgerFeeMode;
     startTime: Date | null;
     endTime: Date | null;
+}
+
+export type LedgerFeeMode = 'separate' | 'ohlcv';
+
+export interface LedgerAnalysisOptions {
+    feeMode?: LedgerFeeMode;
+    gtFeeQuoteResolver?: (entry: LedgerEntry) => number | null;
 }
 
 const STABLE_QUOTES = new Set(['USDT', 'USDC', 'USD', 'BUSD', 'DAI', 'TUSD']);
@@ -115,10 +125,15 @@ export function importLedger(filePath: string): LedgerEntry[] {
     });
 }
 
-export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
+export function analyzeLedger(entries: LedgerEntry[], options: LedgerAnalysisOptions = {}): LedgerSummary {
+    const feeMode = options.feeMode ?? 'separate';
     const tradeGroups = new Map<string, LedgerEntry[]>();
     const feesByCurrency: Record<string, number> = {};
     const tradeTimes: number[] = [];
+    let gtFeeInQuote = 0;
+    let gtFeeMissingCount = 0;
+    let gtPriceSum = 0;
+    let gtPriceCount = 0;
 
     entries.forEach((entry, index) => {
         if (entry.actionType === 'fee') {
@@ -127,6 +142,16 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
                 feesByCurrency[entry.currency] = 0;
             }
             feesByCurrency[entry.currency] += feeValue;
+            if (entry.currency === 'GT' && feeMode === 'ohlcv' && options.gtFeeQuoteResolver) {
+                const price = options.gtFeeQuoteResolver(entry);
+                if (price !== null && Number.isFinite(price)) {
+                    gtFeeInQuote += feeValue * price;
+                    gtPriceSum += price;
+                    gtPriceCount += 1;
+                } else {
+                    gtFeeMissingCount += 1;
+                }
+            }
             return;
         }
         if (entry.actionType !== 'trade') {
@@ -142,8 +167,6 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
     const positionByAsset = new Map<string, { qty: number; cost: number }>();
     let realizedPnlGross = 0;
     let turnover = 0;
-    let gtQuoteValue = 0;
-    let gtBaseValue = 0;
 
     for (const group of tradeGroups.values()) {
         const totals = new Map<string, number>();
@@ -168,11 +191,6 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
         const baseDelta = totals.get(baseCurrency) || 0;
         const quoteDelta = totals.get(quoteCurrency) || 0;
         turnover += Math.abs(quoteDelta);
-
-        if (baseCurrency === 'GT' && quoteCurrency) {
-            gtQuoteValue += Math.abs(quoteDelta);
-            gtBaseValue += Math.abs(baseDelta);
-        }
 
         const tradeTime = Date.parse(group[0].time);
         if (!Number.isNaN(tradeTime)) {
@@ -212,9 +230,8 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
     }, 0);
 
     const totalFeesInGt = feesByCurrency.GT || 0;
-    const gtPriceInQuote = gtBaseValue > 0 ? gtQuoteValue / gtBaseValue : null;
-    const gtFeeInQuote = gtPriceInQuote ? totalFeesInGt * gtPriceInQuote : 0;
-    const totalFeesInQuoteWithGt = totalFeesInQuote + gtFeeInQuote;
+    const gtPriceInQuote = gtPriceCount > 0 ? gtPriceSum / gtPriceCount : null;
+    const totalFeesInQuoteWithGt = feeMode === 'ohlcv' ? totalFeesInQuote + gtFeeInQuote : totalFeesInQuote;
     const realizedPnlNet = realizedPnlGross - totalFeesInQuoteWithGt;
     const avgProfitPerTrade = tradesCount > 0 ? realizedPnlNet / tradesCount : 0;
     const feeRatio = turnover > 0 ? totalFeesInQuoteWithGt / turnover : 0;
@@ -228,10 +245,13 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
         feeRatio,
         tradesPerHour,
         feesByCurrency,
-        totalFeesInQuote: totalFeesInQuoteWithGt,
+        totalFeesInQuote,
         totalFeesInGt,
         gtFeeInQuote,
+        totalFeesInQuoteWithGt,
         gtPriceInQuote,
+        gtFeeMissingCount,
+        feeMode,
         startTime,
         endTime
     };

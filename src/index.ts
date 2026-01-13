@@ -4,7 +4,7 @@ import path from 'path';
 import { Command } from 'commander';
 import { fetchOHLCV } from './real/ohlcv';
 import { detectRegime } from './core/regime';
-import { analyzeLedger, importLedger, LedgerSummary } from './core/importLedger';
+import { analyzeLedger, importLedger, LedgerFeeMode, LedgerSummary } from './core/importLedger';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
 
@@ -71,15 +71,7 @@ function buildLedgerMetrics(summary: LedgerSummary): { metrics: OutputMetrics; f
   const feesBreakdown = Object.entries(summary.feesByCurrency)
     .map(([currency, amount]) => `${amount.toFixed(6)} ${currency}`)
     .join(', ');
-  const feesTotal =
-    typeof summary.totalFeesInQuote === 'number'
-      ? summary.totalFeesInQuote
-      : Object.entries(summary.feesByCurrency).reduce((sum, [currency, amount]) => {
-          if (['USDT', 'USDC', 'USD', 'BUSD', 'DAI', 'TUSD'].includes(currency)) {
-            return sum + amount;
-          }
-          return sum;
-        }, 0);
+  const feesTotal = summary.totalFeesInQuoteWithGt;
   return {
     feesTotal,
     feesBreakdown,
@@ -90,6 +82,74 @@ function buildLedgerMetrics(summary: LedgerSummary): { metrics: OutputMetrics; f
       feeRatio: summary.feeRatio,
       trades: summary.tradesCount,
       turnover: summary.turnover,
+    },
+  };
+}
+
+function readLedgerFeeMode(options: Record<string, unknown>): LedgerFeeMode {
+  const modeRaw = readStringOption(options, 'ledgerFeeMode');
+  const normalized = (modeRaw ?? 'separate').toLowerCase();
+  if (normalized === 'ohlcv') {
+    return 'ohlcv';
+  }
+  return 'separate';
+}
+
+function createOhlcvPriceResolver(
+  ohlcv: { timestamp: number; close: number }[]
+): (timestamp: number) => number | null {
+  const timestamps = ohlcv.map((candle) => candle.timestamp);
+  return (timestamp: number) => {
+    let left = 0;
+    let right = timestamps.length - 1;
+    let matchIndex = -1;
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      if (timestamps[mid] <= timestamp) {
+        matchIndex = mid;
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+    return matchIndex >= 0 ? ohlcv[matchIndex].close : null;
+  };
+}
+
+async function resolveGtFeeQuoteResolver(
+  entries: ReturnType<typeof importLedger>,
+  options: Record<string, unknown>
+): Promise<{ resolver?: (entry: ReturnType<typeof importLedger>[number]) => number | null; ohlcvCount: number }> {
+  const gtFeeTimes = entries
+    .filter((entry) => entry.actionType === 'fee' && entry.currency === 'GT')
+    .map((entry) => Date.parse(entry.time))
+    .filter((timestamp) => Number.isFinite(timestamp));
+  if (!gtFeeTimes.length) {
+    return { ohlcvCount: 0 };
+  }
+  const since = new Date(Math.min(...gtFeeTimes)).toISOString();
+  const until = new Date(Math.max(...gtFeeTimes)).toISOString();
+  const gtOhlcv = await resolveOhlcv({
+    exchange: options.exchange,
+    symbol: 'GT/USDT',
+    timeframe: options.timeframe,
+    since,
+    until,
+    ohlcvSource: options.ohlcvSource,
+    ohlcvLimit: options.ohlcvLimit,
+  });
+  if (!gtOhlcv.length) {
+    return { ohlcvCount: 0 };
+  }
+  const priceResolver = createOhlcvPriceResolver(gtOhlcv);
+  return {
+    ohlcvCount: gtOhlcv.length,
+    resolver: (entry) => {
+      const timestamp = Date.parse(entry.time);
+      if (!Number.isFinite(timestamp)) {
+        return null;
+      }
+      return priceResolver(timestamp);
     },
   };
 }
@@ -283,10 +343,15 @@ program
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
+  .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .action(async (file, options) => {
       try {
         const entries = importLedger(file);
-        const summary = analyzeLedger(entries);
+        const feeMode = readLedgerFeeMode(options);
+        const gtFeeResolution =
+          feeMode === 'ohlcv' ? await resolveGtFeeQuoteResolver(entries, options) : { resolver: undefined, ohlcvCount: 0 };
+        const gtFeeQuoteResolver = gtFeeResolution.resolver;
+        const summary = analyzeLedger(entries, { feeMode, gtFeeQuoteResolver });
         console.log(`Imported ${entries.length} entries from ledger.`);
         if (!summary.startTime || !summary.endTime) {
           console.log('Not enough trade data to build a report.');
@@ -298,6 +363,18 @@ program
         console.log('\nLedger report');
         console.log(`Period: ${summary.startTime.toISOString()} - ${summary.endTime.toISOString()}`);
         console.log(`Avg profit/trade: ${summary.avgProfitPerTrade.toFixed(4)} (quote)`);
+        if (summary.feeMode === 'ohlcv' && !gtFeeQuoteResolver) {
+          console.log('GT/USDT OHLCV data unavailable; GT fees reported separately.');
+        }
+        console.log(`fees_total_quote: ${summary.totalFeesInQuote.toFixed(6)}`);
+        console.log(`fees_total_gt: ${summary.totalFeesInGt.toFixed(6)}`);
+        if (summary.feeMode === 'ohlcv') {
+          console.log(`gt_fees_quote: ${summary.gtFeeInQuote.toFixed(6)}`);
+          console.log(`fees_total_quote_equiv: ${summary.totalFeesInQuoteWithGt.toFixed(6)}`);
+          if (summary.gtFeeMissingCount > 0) {
+            console.log(`gt_fee_price_missing: ${summary.gtFeeMissingCount}`);
+          }
+        }
         console.log(`Fees: ${feesBreakdown || 'n/a'}`);
         console.log(`Trades/hour: ${summary.tradesPerHour.toFixed(2)}`);
         formatMetrics('Ledger metrics', ledgerMetrics);
@@ -433,10 +510,15 @@ program
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
+  .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .action(async (file, options) => {
     try {
       const entries = importLedger(file);
-      const summary = analyzeLedger(entries);
+      const feeMode = readLedgerFeeMode(options);
+      const gtFeeResolution =
+        feeMode === 'ohlcv' ? await resolveGtFeeQuoteResolver(entries, options) : { resolver: undefined, ohlcvCount: 0 };
+      const gtFeeQuoteResolver = gtFeeResolution.resolver;
+      const summary = analyzeLedger(entries, { feeMode, gtFeeQuoteResolver });
       console.log(`Imported ${entries.length} entries from ledger.`);
       if (!summary.startTime || !summary.endTime) {
         console.log('Not enough trade data to build a report.');
@@ -446,6 +528,18 @@ program
       const { metrics: ledgerMetrics, feesBreakdown } = buildLedgerMetrics(summary);
       console.log('\nLedger report');
       console.log(`Period: ${summary.startTime.toISOString()} - ${summary.endTime.toISOString()}`);
+      if (summary.feeMode === 'ohlcv' && !gtFeeQuoteResolver) {
+        console.log('GT/USDT OHLCV data unavailable; GT fees reported separately.');
+      }
+      console.log(`fees_total_quote: ${summary.totalFeesInQuote.toFixed(6)}`);
+      console.log(`fees_total_gt: ${summary.totalFeesInGt.toFixed(6)}`);
+      if (summary.feeMode === 'ohlcv') {
+        console.log(`gt_fees_quote: ${summary.gtFeeInQuote.toFixed(6)}`);
+        console.log(`fees_total_quote_equiv: ${summary.totalFeesInQuoteWithGt.toFixed(6)}`);
+        if (summary.gtFeeMissingCount > 0) {
+          console.log(`gt_fee_price_missing: ${summary.gtFeeMissingCount}`);
+        }
+      }
       console.log(`Fees: ${feesBreakdown || 'n/a'}`);
       formatMetrics('Ledger metrics', ledgerMetrics);
 
