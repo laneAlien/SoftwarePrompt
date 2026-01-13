@@ -126,9 +126,13 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     const fromIndex = currentIndex ?? resolveGridIndex(fromPrice, state, grids);
     const toIndex = resolveGridIndex(toPrice, state, grids);
 
+    const isTaker = slippageRate > 0;
+    const feeRate = isTaker ? takerFeeRate : makerFeeRate;
+
     if (toIndex > fromIndex) {
       for (let i = fromIndex + 1; i <= toIndex; i += 1) {
         const levelPrice = resolveGridPrice(state, i);
+        const executionPrice = resolveExecutionPrice(levelPrice, 'sell', isTaker, slippageRate);
         const qty = orderValue / levelPrice;
         if (baseBalance >= qty) {
           baseBalance -= qty;
