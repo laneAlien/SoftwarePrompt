@@ -1,14 +1,13 @@
 import { OHLCV } from '../real/ohlcv';
 import { GridResult, runGridBacktest } from './gridEngine';
 
-export { GridResult };
-
-export function backtestSpotGrid(
+export function backtestTrailingGrid(
   ohlcv: OHLCV[],
   low: number,
   high: number,
   grids: number,
   allocation: number,
+  trailStepPercent: number,
   feeRate: number = 0.002
 ): GridResult {
   return runGridBacktest({
@@ -18,5 +17,10 @@ export function backtestSpotGrid(
     grids,
     allocation,
     feeRate,
+    trailStepPercent,
+    stopOnMa30: true,
+    stopOnLowCloses: 2,
   });
 }
+
+export { GridResult };
