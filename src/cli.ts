@@ -89,8 +89,8 @@ function shouldRenderAsciiPlot(options: Record<string, unknown>, outputFormat: O
   return outputFormat !== 'json' && readStringOption(options, 'plot') === 'ascii';
 }
 
-function shouldRenderPngPlot(options: Record<string, unknown>): boolean {
-  return readStringOption(options, 'plot') === 'png';
+function shouldRenderPngPlot(options: Record<string, unknown>, outputFormat: OutputFormat): boolean {
+  return outputFormat !== 'json' && readStringOption(options, 'plot') === 'png';
 }
 
 function printAsciiPlot(outputFormat: OutputFormat, title: string, chart: string): void {
@@ -1251,13 +1251,25 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       ],
     };
     if (shouldRenderAsciiPlot(options, outputFormat)) {
-      const plotPoints = Math.min(gridResult.equityCurve.length, 120);
+      const plotPoints = Math.min(ohlcv.length, 120);
       if (plotPoints > 0) {
-        const chart = renderAsciiChartSeries([gridResult.equityCurve.slice(-plotPoints)]);
-        printAsciiPlot(outputFormat, `Equity curve (last ${plotPoints} points)`, chart);
+        const closes = ohlcv.map((candle) => candle.close);
+        const ma30Series = sma(closes, 30).map((value, index) =>
+          Number.isFinite(value) ? value : closes[index]
+        );
+        const chart = renderAsciiChartSeries([
+          closes.slice(-plotPoints),
+          ma30Series.slice(-plotPoints),
+        ]);
+        printAsciiPlot(outputFormat, `Close + MA30 (last ${plotPoints} points)`, chart);
+      }
+      const equityPoints = Math.min(gridResult.equityCurve.length, 120);
+      if (equityPoints > 0) {
+        const chart = renderAsciiChartSeries([gridResult.equityCurve.slice(-equityPoints)]);
+        printAsciiPlot(outputFormat, `Equity curve (last ${equityPoints} points)`, chart);
       }
     }
-    if (shouldRenderPngPlot(options)) {
+    if (shouldRenderPngPlot(options, outputFormat)) {
       const priceLabels = ohlcv.map((candle) => new Date(candle.timestamp).toLocaleString());
       const closeSeries = ohlcv.map((candle) => candle.close);
       const ma30Series = sma(closeSeries, 30).map((value) => (Number.isFinite(value) ? value : null));
@@ -2211,7 +2223,7 @@ Examples:
           },
         ],
       };
-      if (shouldRenderPngPlot(options)) {
+      if (shouldRenderPngPlot(options, outputFormat)) {
         const priceLabels = periodCandles.map((candle) => new Date(candle.timestamp).toLocaleString());
         const closeSeries = periodCandles.map((candle) => candle.close);
         const ma30Series = sma(closeSeries, 30).map((value) => (Number.isFinite(value) ? value : null));
