@@ -7,10 +7,8 @@ export interface SlippageModel {
 }
 
 export interface GridResult {
-    pnl: number;
-    pnl_gross: number;
-    fees_total: number;
-    pnl_net: number;
+    pnlGross: number;
+    pnlNet: number;
     maxDD: number;
     tradesCount: number;
     turnover: number;
@@ -21,199 +19,136 @@ export interface GridResult {
     finalQuote: number;
 }
 
-export interface GridConfig {
-    low: number;
-    high: number;
-    grids: number;
-    allocation: number;
-    feeModel: FeeModelGate;
-    slippageModel?: SlippageModel;
-    execution?: 'maker' | 'taker';
-}
+export function backtestSpotGrid(
+    ohlcv: OHLCV[],
+    low: number,
+    high: number,
+    grids: number,
+    allocation: number,
+    feeRate: number = 0.002,
+    slippageRate: number = 0.0005,
+    takerFeeRate: number = feeRate * 1.5
+): GridResult {
+    let maxDD = 0;
+    let tradesCount = 0;
+    let turnover = 0;
+    let fees = 0;
 
-export interface GridState {
-    levels: number[];
-    orders: Map<number, 'buy' | 'sell'>;
-    baseBalance: number;
-    quoteBalance: number;
-    tradesCount: number;
-    turnover: number;
-    feesGross: number;
-    feesNet: number;
-    peakEquity: number;
-    maxDD: number;
-    orderSizeQuote: number;
-}
-
-export function buildGridLevels(low: number, high: number, grids: number): number[] {
     const step = (high - low) / grids;
-    return Array.from({ length: grids + 1 }, (_, i) => low + step * i);
-}
+    const gridLevels = Array.from({ length: grids + 1 }, (_, idx) => low + step * idx);
+    const intervalQtys = Array.from({ length: grids }, () => 0);
 
-export function initializeGridState(config: GridConfig, initialPrice: number): GridState {
-    const levels = buildGridLevels(config.low, config.high, config.grids);
-    const orders = new Map<number, 'buy' | 'sell'>();
-    const baseAllocation = config.allocation * 0.5;
-    const quoteAllocation = config.allocation - baseAllocation;
-    const baseBalance = baseAllocation / initialPrice;
-    const quoteBalance = quoteAllocation;
-    const orderSizeQuote = config.allocation / config.grids;
+    const makerFeeRate = feeRate;
+    let position = 0;
+    let balance = allocation;
+    let peak = allocation;
+    let prevClose: number | null = null;
 
-    levels.forEach(level => {
-        if (level < initialPrice) {
-            orders.set(level, 'buy');
-        } else if (level > initialPrice) {
-            orders.set(level, 'sell');
+    const recordTrade = (qty: number, price: number, feeRateToUse: number, side: 'buy' | 'sell') => {
+        const notional = qty * price;
+        const fee = notional * feeRateToUse;
+        if (side === 'buy') {
+            const totalCost = notional + fee;
+            if (balance < totalCost) return false;
+            balance -= totalCost;
+            position += qty;
+        } else {
+            balance += notional - fee;
+            position -= qty;
         }
-    });
-
-    return {
-        levels,
-        orders,
-        baseBalance,
-        quoteBalance,
-        tradesCount: 0,
-        turnover: 0,
-        feesGross: 0,
-        feesNet: 0,
-        peakEquity: config.allocation,
-        maxDD: 0,
-        orderSizeQuote,
+        turnover += notional;
+        fees += fee;
+        tradesCount += 1;
+        return true;
     };
-}
 
-function executionPrice(level: number, side: 'buy' | 'sell', slippage: SlippageModel, execution: 'maker' | 'taker'): number {
-    const rate = execution === 'maker' ? slippage.maker : slippage.taker;
-    if (side === 'buy') {
-        return level * (1 + rate);
-    }
-    return level * (1 - rate);
-}
-
-function processOrder(
-    state: GridState,
-    level: number,
-    side: 'buy' | 'sell',
-    config: GridConfig
-): void {
-    const slippageModel = config.slippageModel ?? { maker: 0, taker: 0 };
-    const execution = config.execution ?? 'maker';
-    const price = executionPrice(level, side, slippageModel, execution);
-    const isMaker = execution === 'maker';
-
-    if (side === 'buy') {
-        const quoteToSpend = state.orderSizeQuote;
-        if (state.quoteBalance < quoteToSpend) return;
-        const baseQty = quoteToSpend / price;
-        const fee = calculateFee(quoteToSpend, isMaker, config.feeModel);
-        state.quoteBalance -= quoteToSpend + fee.feeNet;
-        state.baseBalance += baseQty;
-        state.feesGross += fee.feeGross;
-        state.feesNet += fee.feeNet;
-        state.turnover += quoteToSpend;
-        state.tradesCount += 1;
-
-        const idx = state.levels.indexOf(level);
-        const nextLevel = state.levels[idx + 1];
-        if (nextLevel !== undefined) {
-            state.orders.set(nextLevel, 'sell');
+    const executeBuy = (levelIndex: number, executionPrice: number, feeRateToUse: number) => {
+        if (levelIndex < 0 || levelIndex >= intervalQtys.length) return;
+        if (intervalQtys[levelIndex] > 0) return;
+        const quotePerGrid = allocation / grids;
+        const qty = quotePerGrid / executionPrice;
+        if (recordTrade(qty, executionPrice, feeRateToUse, 'buy')) {
+            intervalQtys[levelIndex] = qty;
         }
-    } else {
-        const baseQty = state.orderSizeQuote / price;
-        if (state.baseBalance < baseQty) return;
-        const notional = baseQty * price;
-        const fee = calculateFee(notional, isMaker, config.feeModel);
-        state.baseBalance -= baseQty;
-        state.quoteBalance += notional - fee.feeNet;
-        state.feesGross += fee.feeGross;
-        state.feesNet += fee.feeNet;
-        state.turnover += notional;
-        state.tradesCount += 1;
+    };
 
-        const idx = state.levels.indexOf(level);
-        const nextLevel = state.levels[idx - 1];
-        if (nextLevel !== undefined) {
-            state.orders.set(nextLevel, 'buy');
+    const executeSell = (levelIndex: number, executionPrice: number, feeRateToUse: number) => {
+        if (levelIndex < 0 || levelIndex >= intervalQtys.length) return;
+        const qty = intervalQtys[levelIndex];
+        if (qty <= 0) return;
+        recordTrade(qty, executionPrice, feeRateToUse, 'sell');
+        intervalQtys[levelIndex] = 0;
+    };
+
+    const processGap = (open: number) => {
+        if (prevClose === null) return;
+        if (open === prevClose) return;
+        if (open < prevClose) {
+            const upper = prevClose;
+            const lower = open;
+            for (let i = gridLevels.length - 1; i >= 0; i -= 1) {
+                const level = gridLevels[i];
+                if (level < lower || level > upper) continue;
+                const executionPrice = open * (1 + slippageRate);
+                executeBuy(i, executionPrice, takerFeeRate);
+            }
+        } else {
+            const upper = open;
+            const lower = prevClose;
+            for (let i = 0; i < gridLevels.length; i += 1) {
+                const level = gridLevels[i];
+                if (level < lower || level > upper) continue;
+                const executionPrice = open * (1 - slippageRate);
+                executeSell(i - 1, executionPrice, takerFeeRate);
+            }
         }
-    }
+    };
 
-    state.orders.delete(level);
-}
-
-function updateDrawdown(state: GridState, price: number): void {
-    const equity = state.quoteBalance + state.baseBalance * price;
-    if (equity > state.peakEquity) {
-        state.peakEquity = equity;
-    }
-    const dd = (state.peakEquity - equity) / state.peakEquity;
-    if (dd > state.maxDD) {
-        state.maxDD = dd;
-    }
-}
-
-function executeLevelsInRange(
-    state: GridState,
-    config: GridConfig,
-    levels: number[],
-    side: 'buy' | 'sell'
-): void {
-    levels.forEach(level => {
-        const orderSide = state.orders.get(level);
-        if (orderSide === side) {
-            processOrder(state, level, side, config);
+    const processSegment = (start: number, end: number, direction: 'up' | 'down') => {
+        if (start === end) return;
+        const min = Math.min(start, end);
+        const max = Math.max(start, end);
+        if (direction === 'down') {
+            for (let i = gridLevels.length - 1; i >= 0; i -= 1) {
+                const level = gridLevels[i];
+                if (level < min || level > max) continue;
+                executeBuy(i, level, makerFeeRate);
+            }
+            return;
         }
-    });
-}
-
-export function applyGridCandle(state: GridState, config: GridConfig, candle: OHLCV): void {
-    const touchedLevels = state.levels.filter(level => level >= candle.low && level <= candle.high);
-    const ascending = [...touchedLevels].sort((a, b) => a - b);
-    const descending = [...ascending].reverse();
-
-    if (candle.close >= candle.open) {
-        executeLevelsInRange(state, config, descending, 'buy');
-        executeLevelsInRange(state, config, ascending, 'sell');
-    } else {
-        executeLevelsInRange(state, config, ascending, 'sell');
-        executeLevelsInRange(state, config, descending, 'buy');
-    }
-
-    updateDrawdown(state, candle.close);
-}
-
-export function backtestSpotGrid(ohlcv: OHLCV[], config: GridConfig): GridResult {
-    if (ohlcv.length === 0) {
-        return {
-            pnlGross: 0,
-            pnlNet: 0,
-            maxDD: 0,
-            tradesCount: 0,
-            turnover: 0,
-            feesGross: 0,
-            feesNet: 0,
-            feeRatio: 0,
-            finalBase: 0,
-            finalQuote: 0,
-        };
-    }
-
-    const state = initializeGridState(config, ohlcv[0].close);
+        for (let i = 0; i < gridLevels.length; i += 1) {
+            const level = gridLevels[i];
+            if (level < min || level > max) continue;
+            executeSell(i - 1, level, makerFeeRate);
+        }
+    };
 
     for (const candle of ohlcv) {
-        applyGridCandle(state, config, candle);
+        processGap(candle.open);
+
+        if (candle.close >= candle.open) {
+            processSegment(candle.open, candle.low, 'down');
+            processSegment(candle.low, candle.high, 'up');
+        } else {
+            processSegment(candle.open, candle.high, 'up');
+            processSegment(candle.high, candle.low, 'down');
+        }
+
+        const currentEquity = balance + position * candle.close;
+        if (currentEquity > peak) peak = currentEquity;
+        const dd = peak > 0 ? (peak - currentEquity) / peak : 0;
+        if (dd > maxDD) maxDD = dd;
+        prevClose = candle.close;
     }
 
-    pnl = (balance + position * ohlcv[ohlcv.length - 1].close) - allocation;
-    
-    const pnlGross = pnl;
-    const feesTotal = fees;
-    const pnlNet = pnlGross - feesTotal;
+    const lastPrice = ohlcv[ohlcv.length - 1]?.close ?? 0;
+    const finalEquity = balance + position * lastPrice;
+    const pnlNet = finalEquity - allocation;
+    const pnlGross = pnlNet + fees;
 
     return {
-        pnl,
-        pnl_gross: pnlGross,
-        fees_total: feesTotal,
-        pnl_net: pnlNet,
+        pnlGross,
+        pnlNet,
         maxDD,
         tradesCount,
         turnover,
