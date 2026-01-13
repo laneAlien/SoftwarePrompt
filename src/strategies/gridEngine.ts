@@ -99,6 +99,7 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
 
   const orderValue = allocation / Math.max(1, grids - 1);
 
+  const feeRate = makerFeeRate;
   let pnlGross = 0;
   let pnlNet = 0;
   let maxDD = 0;
@@ -129,23 +130,23 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
       for (let i = fromIndex + 1; i <= toIndex; i += 1) {
         const levelPrice = resolveGridPrice(state, i);
         const qty = orderValue / levelPrice;
-        if (position >= qty) {
-          position -= qty;
-          balance += orderValue;
+        if (baseBalance >= qty) {
+          baseBalance -= qty;
+          quoteBalance += orderValue;
           turnover += orderValue;
-          fees += orderValue * feeRate;
+          feesTotal += orderValue * feeRate;
           tradesCount += 1;
         }
       }
     } else if (toIndex < fromIndex) {
       for (let i = fromIndex - 1; i >= toIndex; i -= 1) {
-        if (balance >= orderValue) {
+        if (quoteBalance >= orderValue) {
           const levelPrice = resolveGridPrice(state, i);
           const qty = orderValue / levelPrice;
-          position += qty;
-          balance -= orderValue;
+          baseBalance += qty;
+          quoteBalance -= orderValue;
           turnover += orderValue;
-          fees += orderValue * feeRate;
+          feesTotal += orderValue * feeRate;
           tradesCount += 1;
         }
       }
@@ -177,7 +178,7 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
       executeMove(fromPrice, toPrice);
     }
 
-    const currentEquity = balance + position * close;
+    const currentEquity = quoteBalance + baseBalance * close;
     if (currentEquity > peak) peak = currentEquity;
     const dd = peak > 0 ? (peak - currentEquity) / peak : 0;
     if (dd > maxDD) maxDD = dd;
