@@ -85,12 +85,16 @@ function readOutputFormat(options: Record<string, unknown>): OutputFormat {
   return normalizeOutputFormat(readStringOption(options, 'output'));
 }
 
+function normalizePlotType(value: string | undefined): string | undefined {
+  return value?.trim().toLowerCase();
+}
+
 function shouldRenderAsciiPlot(options: Record<string, unknown>, outputFormat: OutputFormat): boolean {
-  return outputFormat !== 'json' && readStringOption(options, 'plot') === 'ascii';
+  return outputFormat !== 'json' && normalizePlotType(readStringOption(options, 'plot')) === 'ascii';
 }
 
 function shouldRenderPngPlot(options: Record<string, unknown>, outputFormat: OutputFormat): boolean {
-  return outputFormat !== 'json' && readStringOption(options, 'plot') === 'png';
+  return outputFormat !== 'json' && normalizePlotType(readStringOption(options, 'plot')) === 'png';
 }
 
 function printAsciiPlot(outputFormat: OutputFormat, title: string, chart: string): void {
@@ -1532,6 +1536,7 @@ program
     `
 Examples:
   $ npm start -- analysis:analyze-regime --exchange gate --symbol RAVE/USDT --since 2024-01-01
+  $ npm start -- analysis:analyze-regime --symbol BTC/USDT --since 2023-10-01 --plot ascii
   $ npm start -- analysis:analyze-regime --symbol BTC/USDT --since 2023-10-01 --output md --save-report
 `
   )
@@ -2183,7 +2188,7 @@ program
   .option('--trail-step-percent <percent>', 'Trailing grid step percent')
   .option('--stop-on-ma30 <enabled>', 'Stop when close drops below MA30 (true|false)')
   .option('--stop-on-low-closes <count>', 'Stop after N closes below grid low')
-  .option('--plot <type>', 'Plot type: ascii|png')
+  .option('--plot <type>', 'Plot type: ascii|png (png saved to reports/)')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .addHelpText(
@@ -2227,7 +2232,7 @@ program
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'cache')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
-  .option('--plot <type>', 'Plot type: png')
+  .option('--plot <type>', 'Plot type: png (saved to reports/)')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .addHelpText(
