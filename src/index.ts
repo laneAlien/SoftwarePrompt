@@ -4,13 +4,13 @@ import path from 'path';
 import { Command } from 'commander';
 import { fetchOHLCV } from './real/ohlcv';
 import { detectRegime } from './core/regime';
-import { analyzeLedger, importLedger, LedgerFeeMode, LedgerSummary } from './core/importLedger';
+import { analyzeLedger, importLedger, LedgerEntry, LedgerFeeMode, LedgerSummary } from './core/importLedger';
 import { getProfileDefaults } from './core/profiles';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
 import { FeeDefaults, loadConfig } from './core/config';
 import { sma } from './indicators/sma';
-import { renderAsciiChartSeries } from './ui/charts';
+import { renderAsciiChartSeries, renderBarChartPNG, renderLineChartPNG } from './ui/charts';
 import {
   OutputFormat,
   ReportPayload,
@@ -51,6 +51,10 @@ function shouldRenderAsciiPlot(options: Record<string, unknown>, outputFormat: O
   return outputFormat !== 'json' && readStringOption(options, 'plot') === 'ascii';
 }
 
+function shouldRenderPngPlot(options: Record<string, unknown>): boolean {
+  return readStringOption(options, 'plot') === 'png';
+}
+
 function printAsciiPlot(outputFormat: OutputFormat, title: string, chart: string): void {
   if (outputFormat === 'json') return;
   if (outputFormat === 'md') {
@@ -74,6 +78,18 @@ function renderReport(format: OutputFormat, report: ReportPayload): void {
 
 function sanitizeFilePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+/, '').replace(/-+$/, '') || 'unknown';
+}
+
+function buildPlotPath(commandName: string, symbol: string, plotName: string): string {
+  const now = new Date();
+  const dateFolder = now.toISOString().slice(0, 10);
+  const timestamp = now.toISOString().replace(/[:.]/g, '-');
+  const safeCommand = sanitizeFilePart(commandName);
+  const safeSymbol = sanitizeFilePart(symbol);
+  const safePlot = sanitizeFilePart(plotName);
+  const dir = path.join('reports', dateFolder);
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `plot_${safeCommand}_${safeSymbol}_${safePlot}_${timestamp}.png`);
 }
 
 function formatReportOutput(format: OutputFormat, report: ReportPayload): string {
@@ -177,6 +193,48 @@ function parseOptionalBoolean(value: string | undefined): boolean | undefined {
   if (value === 'true' || value === '1') return true;
   if (value === 'false' || value === '0') return false;
   return undefined;
+}
+
+function buildHourlyHistogram(entries: LedgerEntry[], quoteCurrency: string): {
+  labels: string[];
+  trades: number[];
+  fees: number[];
+} | null {
+  const buckets = new Map<number, { trades: number; fees: number }>();
+
+  entries.forEach((entry) => {
+    const timestamp = Date.parse(entry.time);
+    if (Number.isNaN(timestamp)) {
+      return;
+    }
+    const hourStart = Math.floor(timestamp / 3600000) * 3600000;
+    const bucket = buckets.get(hourStart) ?? { trades: 0, fees: 0 };
+    if (entry.actionType === 'trade') {
+      bucket.trades += 1;
+    }
+    if (entry.actionType === 'fee' && entry.currency === quoteCurrency) {
+      bucket.fees += Math.abs(entry.amount);
+    }
+    buckets.set(hourStart, bucket);
+  });
+
+  if (buckets.size === 0) {
+    return null;
+  }
+
+  const sortedHours = Array.from(buckets.keys()).sort((a, b) => a - b);
+  const labels = sortedHours.map((hour) => {
+    const date = new Date(hour);
+    return `${date.toISOString().slice(0, 13)}:00`;
+  });
+  const trades = sortedHours.map((hour) => buckets.get(hour)?.trades ?? 0);
+  const fees = sortedHours.map((hour) => buckets.get(hour)?.fees ?? 0);
+
+  if (trades.every((value) => value === 0) && fees.every((value) => value === 0)) {
+    return null;
+  }
+
+  return { labels, trades, fees };
 }
 
 function isFlagSet(flags: string[]): boolean {
@@ -1110,7 +1168,7 @@ program
   .option('--trail-step-percent <percent>', 'Trailing grid step percent')
   .option('--stop-on-ma30 <enabled>', 'Stop when close drops below MA30 (true|false)')
   .option('--stop-on-low-closes <count>', 'Stop after N closes below grid low')
-  .option('--plot <type>', 'Plot type: ascii')
+  .option('--plot <type>', 'Plot type: ascii|png')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .action(async (options) => {
@@ -1245,6 +1303,34 @@ program
           printAsciiPlot(outputFormat, `Equity curve (last ${plotPoints} points)`, chart);
         }
       }
+      if (shouldRenderPngPlot(options)) {
+        const priceLabels = ohlcv.map((candle) => new Date(candle.timestamp).toLocaleString());
+        const closeSeries = ohlcv.map((candle) => candle.close);
+        const ma30Series = sma(closeSeries, 30).map((value) => (Number.isFinite(value) ? value : null));
+        const pricePlotPath = buildPlotPath('backtest-grid', symbol, 'price-ma30');
+        await renderLineChartPNG(
+          priceLabels,
+          [
+            { label: 'Close', data: closeSeries, borderColor: 'rgba(75,192,192,1)' },
+            { label: 'MA30', data: ma30Series, borderColor: 'rgba(255,159,64,1)' },
+          ],
+          pricePlotPath,
+          { title: 'Close + MA30' }
+        );
+        console.log(`Saved plot -> ${pricePlotPath}`);
+
+        const equityLength = Math.min(gridResult.equityCurve.length, priceLabels.length);
+        const equityLabels = priceLabels.slice(0, equityLength);
+        const equitySeries = gridResult.equityCurve.slice(0, equityLength);
+        const equityPlotPath = buildPlotPath('backtest-grid', symbol, 'equity-curve');
+        await renderLineChartPNG(
+          equityLabels,
+          [{ label: 'Equity', data: equitySeries, borderColor: 'rgba(153,102,255,1)' }],
+          equityPlotPath,
+          { title: 'Equity curve' }
+        );
+        console.log(`Saved plot -> ${equityPlotPath}`);
+      }
       renderReportWithSave('backtest-grid', outputFormat, report, options, symbol);
     } catch (error) {
       console.error('Error running grid backtest:', error);
@@ -1275,11 +1361,13 @@ program
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
+  .option('--plot <type>', 'Plot type: png')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .action(async (file, options) => {
     try {
       const outputFormat = readOutputFormat(options);
+      const symbol = readStringOption(options, 'symbol') ?? 'RAVE/USDT';
       const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
       const entries = importLedger(file);
       const feeMode = readLedgerFeeMode(options);
@@ -1293,7 +1381,7 @@ program
           outputFormat,
           buildStatusReport('Not enough trade data to build a report.'),
           options,
-          options.symbol
+          symbol
         );
         return;
       }
@@ -1302,7 +1390,7 @@ program
 
       const ohlcv = await resolveOhlcv({
         exchange: options.exchange,
-        symbol: options.symbol,
+        symbol,
         timeframe: options.timeframe,
         since: summary.startTime.toISOString(),
         until: summary.endTime.toISOString(),
@@ -1315,7 +1403,7 @@ program
           outputFormat,
           buildStatusReport('No OHLCV data available for the ledger period.'),
           options,
-          options.symbol
+          symbol
         );
         return;
       }
@@ -1327,7 +1415,7 @@ program
           outputFormat,
           buildStatusReport('No OHLCV data available for the ledger period.'),
           options,
-          options.symbol
+          symbol
         );
         return;
       }
@@ -1406,7 +1494,51 @@ program
           },
         ],
       };
-      renderReportWithSave('compare', outputFormat, report, options, options.symbol);
+      if (shouldRenderPngPlot(options)) {
+        const priceLabels = periodCandles.map((candle) => new Date(candle.timestamp).toLocaleString());
+        const closeSeries = periodCandles.map((candle) => candle.close);
+        const ma30Series = sma(closeSeries, 30).map((value) => (Number.isFinite(value) ? value : null));
+        const pricePlotPath = buildPlotPath('compare', symbol, 'price-ma30');
+        await renderLineChartPNG(
+          priceLabels,
+          [
+            { label: 'Close', data: closeSeries, borderColor: 'rgba(75,192,192,1)' },
+            { label: 'MA30', data: ma30Series, borderColor: 'rgba(255,159,64,1)' },
+          ],
+          pricePlotPath,
+          { title: 'Close + MA30' }
+        );
+        console.log(`Saved plot -> ${pricePlotPath}`);
+
+        const equityLength = Math.min(gridResult.equityCurve.length, priceLabels.length);
+        const equityLabels = priceLabels.slice(0, equityLength);
+        const equitySeries = gridResult.equityCurve.slice(0, equityLength);
+        const equityPlotPath = buildPlotPath('compare', symbol, 'equity-curve');
+        await renderLineChartPNG(
+          equityLabels,
+          [{ label: 'Equity', data: equitySeries, borderColor: 'rgba(153,102,255,1)' }],
+          equityPlotPath,
+          { title: 'Equity curve' }
+        );
+        console.log(`Saved plot -> ${equityPlotPath}`);
+
+        const quoteCurrency = symbol.split('/')[1] ?? '';
+        const histogram = quoteCurrency ? buildHourlyHistogram(entries, quoteCurrency) : null;
+        if (histogram) {
+          const histogramPath = buildPlotPath('compare', symbol, 'fees-trades-per-hour');
+          await renderBarChartPNG(
+            histogram.labels,
+            [
+              { label: 'Trades / hour', data: histogram.trades, backgroundColor: 'rgba(54,162,235,0.6)' },
+              { label: `Fees / hour (${quoteCurrency})`, data: histogram.fees, backgroundColor: 'rgba(255,99,132,0.6)' },
+            ],
+            histogramPath,
+            { title: 'Fees + Trades per hour' }
+          );
+          console.log(`Saved plot -> ${histogramPath}`);
+        }
+      }
+      renderReportWithSave('compare', outputFormat, report, options, symbol);
     } catch (error) {
       console.error('Error comparing ledger to backtest:', error);
     }

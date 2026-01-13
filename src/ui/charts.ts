@@ -4,6 +4,14 @@ import fs from 'fs';
 import path from 'path';
 import { Candle } from '../core/types';
 
+export interface ChartDataset {
+  label: string;
+  data: Array<number | null>;
+  borderColor?: string;
+  backgroundColor?: string;
+  fill?: boolean;
+}
+
 export async function renderChartPNG(candles: Candle[], filePath = 'chart.png'): Promise<string> {
   const width = 800;
   const height = 400;
@@ -20,6 +28,105 @@ export async function renderChartPNG(candles: Candle[], filePath = 'chart.png'):
           fill: false,
         },
       ],
+    },
+  } as any;
+
+  const buffer = await chart.renderToBuffer(configuration);
+  const resolved = path.resolve(filePath);
+  fs.writeFileSync(resolved, buffer);
+  return resolved;
+}
+
+export async function renderLineChartPNG(
+  labels: string[],
+  datasets: ChartDataset[],
+  filePath: string,
+  options: { width?: number; height?: number; title?: string } = {}
+): Promise<string> {
+  const width = options.width ?? 900;
+  const height = options.height ?? 450;
+  const chart = new ChartJSNodeCanvas({ width, height });
+  const configuration = {
+    type: 'line',
+    data: {
+      labels,
+      datasets: datasets.map((dataset) => ({
+        ...dataset,
+        data: dataset.data,
+        borderColor: dataset.borderColor ?? 'rgba(75,192,192,1)',
+        backgroundColor: dataset.backgroundColor ?? 'rgba(75,192,192,0.2)',
+        fill: dataset.fill ?? false,
+        pointRadius: 0,
+        borderWidth: 2,
+      })),
+    },
+    options: {
+      plugins: {
+        title: options.title
+          ? {
+              display: true,
+              text: options.title,
+            }
+          : undefined,
+        legend: {
+          display: true,
+          position: 'top',
+        },
+      },
+      responsive: false,
+    },
+  } as any;
+
+  const buffer = await chart.renderToBuffer(configuration);
+  const resolved = path.resolve(filePath);
+  fs.writeFileSync(resolved, buffer);
+  return resolved;
+}
+
+export async function renderBarChartPNG(
+  labels: string[],
+  datasets: ChartDataset[],
+  filePath: string,
+  options: { width?: number; height?: number; title?: string } = {}
+): Promise<string> {
+  const width = options.width ?? 900;
+  const height = options.height ?? 450;
+  const chart = new ChartJSNodeCanvas({ width, height });
+  const configuration = {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: datasets.map((dataset) => ({
+        ...dataset,
+        data: dataset.data,
+        backgroundColor: dataset.backgroundColor ?? 'rgba(54,162,235,0.6)',
+        borderColor: dataset.borderColor ?? 'rgba(54,162,235,1)',
+        borderWidth: 1,
+      })),
+    },
+    options: {
+      plugins: {
+        title: options.title
+          ? {
+              display: true,
+              text: options.title,
+            }
+          : undefined,
+        legend: {
+          display: true,
+          position: 'top',
+        },
+      },
+      responsive: false,
+      scales: {
+        x: {
+          ticks: {
+            autoSkip: true,
+            maxRotation: 45,
+            minRotation: 0,
+          },
+        },
+      },
     },
   } as any;
 
