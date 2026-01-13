@@ -641,14 +641,14 @@ async function resolveGtFeeQuoteResolver(
   };
 }
 
-function buildGridMetrics(result: GridResult): OutputMetrics {
+function buildGridMetricsRows(result: GridResult): Record<string, ReportValue> {
   return {
-    pnlGross: result.pnlGross,
-    pnlNet: result.pnlNet,
-    feesTotal: result.feesTotal,
-    feeRatio: result.feeRatio,
+    pnl: result.pnlNet.toFixed(4),
+    maxDD: result.maxDD.toFixed(4),
     trades: result.tradesCount,
-    turnover: result.turnover,
+    turnover: result.turnover.toFixed(4),
+    fees: result.feesTotal.toFixed(4),
+    fee_ratio: result.feeRatio.toFixed(6),
   };
 }
 
@@ -657,12 +657,21 @@ function resolveGridParams(
   candles: { low: number; high: number }[],
   overrides?: { grids?: number; allocation?: number }
 ): { low: number; high: number; grids: number; allocation: number } {
-  const gridLow = readStringOption(options, 'gridLow');
-  const gridHigh = readStringOption(options, 'gridHigh');
+  const gridLow = readStringOption(options, 'low') ?? readStringOption(options, 'gridLow');
+  const gridHigh = readStringOption(options, 'high') ?? readStringOption(options, 'gridHigh');
   const gridsOption = readStringOption(options, 'grids');
   const allocationOption = readStringOption(options, 'allocation');
-  const low = gridLow ? parseFloat(gridLow) : Math.min(...candles.map((c) => c.low));
-  const high = gridHigh ? parseFloat(gridHigh) : Math.max(...candles.map((c) => c.high));
+  const resolveBound = (value: string | undefined, fallback: number, label: string): number => {
+    if (!value) return fallback;
+    if (value.toLowerCase() === 'auto') return fallback;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`Invalid grid ${label} value "${value}". Use a number or "auto".`);
+    }
+    return parsed;
+  };
+  const low = resolveBound(gridLow, Math.min(...candles.map((c) => c.low)), 'low');
+  const high = resolveBound(gridHigh, Math.max(...candles.map((c) => c.high)), 'high');
   const grids = overrides?.grids ?? parseNumber(gridsOption, 10);
   const allocation = overrides?.allocation ?? parseNumber(allocationOption, 1000);
   return { low, high, grids, allocation };
@@ -1136,7 +1145,7 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
         },
         {
           title: 'Grid backtest metrics',
-          rows: buildMetricsRows(buildGridMetrics(gridResult)),
+          rows: buildGridMetricsRows(gridResult),
         },
       ],
     };
@@ -1856,8 +1865,10 @@ program
   .option('--rebuild', 'Rebuild cache', false)
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--mode <mode>', 'Backtest mode: spot|trailing', 'spot')
-  .option('--grid-low <low>', 'Grid low price')
-  .option('--grid-high <high>', 'Grid high price')
+  .option('--low <low>', 'Grid low price (number|auto)')
+  .option('--high <high>', 'Grid high price (number|auto)')
+  .option('--grid-low <low>', 'Grid low price (deprecated)')
+  .option('--grid-high <high>', 'Grid high price (deprecated)')
   .option('--grids <grids>', 'Grid levels', '10')
   .option('--allocation <allocation>', 'Allocation', '1000')
   .option('--fee-model <model>', 'Fee model: flat|maker-taker', 'flat')
@@ -1897,8 +1908,10 @@ program
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
   .option('--since <since>', 'Start date (ISO)')
   .option('--until <until>', 'End date (ISO)')
-  .option('--grid-low <low>', 'Grid low price')
-  .option('--grid-high <high>', 'Grid high price')
+  .option('--low <low>', 'Grid low price (number|auto)')
+  .option('--high <high>', 'Grid high price (number|auto)')
+  .option('--grid-low <low>', 'Grid low price (deprecated)')
+  .option('--grid-high <high>', 'Grid high price (deprecated)')
   .option('--grids <grids>', 'Grid levels', '10')
   .option('--allocation <allocation>', 'Allocation', '1000')
   .option('--fee-model <model>', 'Fee model: flat|maker-taker', 'flat')
@@ -2070,7 +2083,7 @@ Examples:
           },
           {
             title: 'Grid backtest metrics',
-            rows: buildMetricsRows(buildGridMetrics(gridResult)),
+            rows: buildGridMetricsRows(gridResult),
           },
           {
             title: 'PnL delta',
