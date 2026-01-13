@@ -34,14 +34,25 @@ program
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--slope-window <number>', 'MA30 slope window', '5')
+  .option('--min-slope <number>', 'Minimum MA30 slope to confirm trend', '0.0001')
+  .option('--min-distance <number>', 'Minimum price distance to MA30', '0.001')
   .action(async (options) => {
-    const ohlcv = await fetchOHLCV(options.exchange, options.symbol, '15m', '2024-01-01', 1000);
-    const prices = ohlcv.map((candle) => candle.close);
+    const ohlcv = await fetchOHLCV(options.exchange, options.symbol, '15m', '2024-01-01', 1000, {
+      rebuildCache: false,
+    });
     const parsedSlopeWindow = Number(options.slopeWindow);
     const slopeWindow = Number.isFinite(parsedSlopeWindow) ? parsedSlopeWindow : 5;
-    const { regime, slope, distance } = detectRegime(prices, { slopeWindow });
+    const parsedMinSlope = Number(options.minSlope);
+    const minSlope = Number.isFinite(parsedMinSlope) ? parsedMinSlope : 0;
+    const parsedMinDistance = Number(options.minDistance);
+    const minDistance = Number.isFinite(parsedMinDistance) ? parsedMinDistance : 0;
+    const { regime, slope, distance } = detectRegime(ohlcv, { slopeWindow, minSlope, minDistance });
+    const periodStart = ohlcv.length ? new Date(ohlcv[0].timestamp).toISOString() : 'n/a';
+    const periodEnd = ohlcv.length ? new Date(ohlcv[ohlcv.length - 1].timestamp).toISOString() : 'n/a';
     console.log(
-      `Current regime for ${options.symbol}: ${regime} | slope: ${slope.toFixed(6)} | distance: ${distance.toFixed(6)}`
+      `Current regime for ${options.symbol}: ${regime} | slope: ${slope.toFixed(6)} | distance: ${distance.toFixed(
+        6
+      )} | period (15m): ${periodStart} → ${periodEnd}`
     );
   });
 

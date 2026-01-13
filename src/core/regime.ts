@@ -7,11 +7,21 @@ export interface RegimeResult {
     distance: number;
 }
 
-export function detectRegime(
-    prices: number[],
-    options: { slopeWindow?: number } = {}
-): RegimeResult {
+export interface RegimeOptions {
+    slopeWindow?: number;
+    minSlope?: number;
+    minDistance?: number;
+}
+
+export type RegimeInput = number[] | Array<{ close: number; timestamp: number }>;
+
+export function detectRegime(input: RegimeInput, options: RegimeOptions = {}): RegimeResult {
     const slopeWindow = Math.max(2, options.slopeWindow ?? 5);
+    const minSlope = Math.max(0, options.minSlope ?? 0);
+    const minDistance = Math.max(0, options.minDistance ?? 0);
+    const prices = input.length > 0 && typeof input[0] !== 'number'
+        ? input.map((point) => point.close)
+        : (input as number[]);
 
     if (prices.length < 30) {
         return {
@@ -41,8 +51,8 @@ export function detectRegime(
     const distance = currentPrice - lastMa30;
 
     let regime: MarketRegime = 'RANGE';
-    if (slope > 0 && currentPrice > lastMa30) regime = 'TREND';
-    if (slope < 0 && currentPrice < lastMa30) regime = 'WEAKNESS';
+    if (slope > minSlope && distance > minDistance) regime = 'TREND';
+    if (slope < -minSlope && distance < -minDistance) regime = 'WEAKNESS';
 
     return {
         regime,
