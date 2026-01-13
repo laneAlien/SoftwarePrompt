@@ -11,7 +11,7 @@ import { generateCandles } from './simulation/candleGenerator';
 import { MarketSimulator } from './simulation/marketSimulator';
 import { OrderExecutionEngine } from './simulation/orderExecution';
 import { TradeBot } from './simulation/tradeBot';
-import { formatSimulationReport } from './simulation/reporter';
+import { SimulationReport } from './simulation/reporter';
 import { KucoinClient } from './real/kucoinClient';
 import { GateClient } from './real/gateClient';
 import { analyzePortfolio } from './real/portfolioAnalyzer';
@@ -182,6 +182,35 @@ function buildStatusReport(message: string): ReportPayload {
         title: 'Message',
         rows: {
           message,
+        },
+      },
+    ],
+  };
+}
+
+function buildSimulationReportPayload(symbol: string, timeframe: string, report: SimulationReport): ReportPayload {
+  return {
+    title: 'Simulation report',
+    sections: [
+      {
+        title: 'Summary',
+        rows: {
+          symbol,
+          timeframe,
+          initial_balance: report.initialBalance.toFixed(2),
+          final_balance: report.finalBalance.toFixed(2),
+          pnl: report.pnl.toFixed(2),
+          pnl_percent: report.pnlPercent.toFixed(2),
+          trades: report.trades,
+          liquidations: report.liquidations,
+          max_drawdown_percent: report.maxDrawdownPercent.toFixed(2),
+        },
+      },
+      {
+        title: 'Trade log',
+        rows: {
+          entries: report.log.length,
+          log: report.log.join('\n'),
         },
       },
     ],
@@ -1516,10 +1545,12 @@ Examples:
   .option('--limit <number>', 'Number of candles', '200')
   .option('--since <string>', 'Start date (YYYY-MM-DD) for historical data')
   .option('--months <number>', 'Number of months back to fetch')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .option('--no-llm', 'Disable LLM analysis output')
   .option('--no-cache', 'Bypass OHLCV cache for fresh pulls')
   .action(async (options) => {
-    console.log(`\nAnalyzing ${options.symbol} on ${options.exchange}...\n`);
+    const outputFormat = readOutputFormat(options);
 
     try {
       if (options.noCache) {
@@ -1568,27 +1599,43 @@ Examples:
       });
       const combinedSignal = combineSignals(signals);
 
-      console.log(`Current Price: $${currentPrice.toFixed(2)}`);
-      console.log(`\nIndicators:`);
-      if (indicators.rsi) console.log(`  RSI: ${indicators.rsi.toFixed(2)}`);
-      if (indicators.macd) console.log(`  MACD: ${indicators.macd.macd.toFixed(4)}`);
-      if (indicators.emaFast) console.log(`  EMA Fast: ${indicators.emaFast.toFixed(2)}`);
-      if (indicators.emaSlow) console.log(`  EMA Slow: ${indicators.emaSlow.toFixed(2)}`);
-      if (typeof indicators.obv === 'number') console.log(`  OBV: ${indicators.obv.toFixed(2)}`);
-      if (typeof indicators.vwap === 'number') console.log(`  VWAP: ${indicators.vwap.toFixed(4)}`);
-      if (typeof indicators.fundingRate === 'number') console.log(`  Funding Rate: ${indicators.fundingRate}`);
+      const indicatorRows: Record<string, ReportValue> = {
+        rsi: indicators.rsi ? indicators.rsi.toFixed(2) : null,
+        macd: indicators.macd ? indicators.macd.macd.toFixed(4) : null,
+        ema_fast: indicators.emaFast ? indicators.emaFast.toFixed(2) : null,
+        ema_slow: indicators.emaSlow ? indicators.emaSlow.toFixed(2) : null,
+        obv: typeof indicators.obv === 'number' ? indicators.obv.toFixed(2) : null,
+        vwap: typeof indicators.vwap === 'number' ? indicators.vwap.toFixed(4) : null,
+        funding_rate: typeof indicators.fundingRate === 'number' ? indicators.fundingRate : null,
+      };
+      const report: ReportPayload = {
+        title: 'Pair analysis report',
+        sections: [
+          {
+            title: 'Summary',
+            rows: {
+              symbol: options.symbol,
+              exchange: options.exchange,
+              timeframe: options.timeframe,
+              current_price: currentPrice.toFixed(2),
+              action: combinedSignal.action.toUpperCase(),
+              score_buy: combinedSignal.scoreBuy.toFixed(2),
+              score_sell: combinedSignal.scoreSell.toFixed(2),
+              score_hold: combinedSignal.scoreHold.toFixed(2),
+              reasons: combinedSignal.reasons.join('; '),
+            },
+          },
+          {
+            title: 'Indicators',
+            rows: indicatorRows,
+          },
+        ],
+      };
 
-      console.log(`\nCombined Signal: ${combinedSignal.action.toUpperCase()}`);
-      console.log(`  Buy Score: ${combinedSignal.scoreBuy.toFixed(2)}`);
-      console.log(`  Sell Score: ${combinedSignal.scoreSell.toFixed(2)}`);
-      console.log(`  Hold Score: ${combinedSignal.scoreHold.toFixed(2)}`);
-
-      console.log(`\nReasons:`);
-      combinedSignal.reasons.forEach((r) => console.log(`  - ${r}`));
-
+      let llmSummary: { summary: string; risks: string[]; disclaimer?: string } | null = null;
       if (!options.noLlm && (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY)) {
         const llmClient = new OpenAILlmClient();
-        const analysis = await llmClient.analyze(
+        llmSummary = await llmClient.analyze(
           {
             symbol: options.symbol,
             timeframe: options.timeframe,
@@ -1598,12 +1645,20 @@ Examples:
           },
           'pair'
         );
-
-        console.log(`\n=== LLM Analysis ===`);
-        console.log(analysis.summary);
-        console.log('Risks:', analysis.risks.join('; '));
-        console.log(`\nDisclaimer: ${analysis.disclaimer}`);
       }
+
+      if (llmSummary) {
+        report.sections.push({
+          title: 'LLM analysis',
+          rows: {
+            summary: llmSummary.summary,
+            risks: llmSummary.risks.join('; '),
+            disclaimer: llmSummary.disclaimer ?? null,
+          },
+        });
+      }
+
+      renderReportWithSave('analysis:analyze-pair', outputFormat, report, options, options.symbol);
     } catch (error) {
       console.error('Error analyzing pair:', error);
     }
@@ -1620,9 +1675,11 @@ Examples:
   $ crypto-ai analysis:analyze-portfolio --no-llm
 `
   )
+  .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .option('--no-llm', 'Disable LLM analysis')
   .action(async (options) => {
-    console.log('\nAnalyzing portfolio...\n');
+    const outputFormat = readOutputFormat(options);
 
     try {
       const clients = [];
@@ -1636,26 +1693,46 @@ Examples:
 
       const portfolio = await analyzePortfolio(clients);
 
-      console.log(`Total Portfolio Value: $${portfolio.totalValueUsd.toFixed(2)}`);
-      console.log(`Stablecoins: ${portfolio.concentration.stablecoinsPercent.toFixed(1)}%`);
-      console.log(`High Risk Assets: ${portfolio.concentration.highRiskPercent.toFixed(1)}%`);
-      console.log(`\nTop Assets:`);
-      portfolio.assets.slice(0, 5).forEach((asset) => {
-        console.log(`  ${asset.symbol}: $${asset.valueUsd?.toFixed(2)} (${asset.exchange})`);
+      const topAssets = portfolio.assets.slice(0, 5).map((asset) => {
+        const value = asset.valueUsd === undefined ? 'n/a' : asset.valueUsd.toFixed(2);
+        return `${asset.symbol}: $${value} (${asset.exchange})`;
       });
+      const report: ReportPayload = {
+        title: 'Portfolio analysis report',
+        sections: [
+          {
+            title: 'Summary',
+            rows: {
+              total_value_usd: portfolio.totalValueUsd.toFixed(2),
+              stablecoins_percent: portfolio.concentration.stablecoinsPercent.toFixed(1),
+              high_risk_percent: portfolio.concentration.highRiskPercent.toFixed(1),
+              top_assets: topAssets.join('; '),
+            },
+          },
+        ],
+      };
 
+      let llmSummary: { summary: string; risks: string[] } | null = null;
       if (!options.noLlm && (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY)) {
         const llm = new OpenAILlmClient();
-        const analysis = await llm.analyze(
+        llmSummary = await llm.analyze(
           {
             portfolioSummary: portfolio,
           },
           'portfolio'
         );
-        console.log('\n=== LLM Portfolio View ===');
-        console.log(analysis.summary);
-        console.log('Risks:', analysis.risks.join('; '));
       }
+      if (llmSummary) {
+        report.sections.push({
+          title: 'LLM analysis',
+          rows: {
+            summary: llmSummary.summary,
+            risks: llmSummary.risks.join('; '),
+          },
+        });
+      }
+
+      renderReportWithSave('analysis:analyze-portfolio', outputFormat, report, options, 'portfolio');
     } catch (error) {
       console.error('Error analyzing portfolio:', error);
     }
@@ -1673,30 +1750,59 @@ Examples:
 `
   )
   .option('--symbol <string>', 'Filter by symbol')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .action(async (options) => {
-    console.log('\nFetching news and signals...\n');
+    const outputFormat = readOutputFormat(options);
 
     try {
       const news = await aggregateNews(options.symbol);
 
-      console.log(`Found ${news.length} items:\n`);
-      news.forEach((item) => {
-        console.log(`${item.title}`);
-        console.log(`  Sentiment: ${item.sentiment} | Source: ${item.source} | Link: ${item.rawLink ?? 'n/a'}`);
+      const items = news.map((item) => {
+        const link = item.rawLink ?? 'n/a';
+        return `${item.title} (sentiment: ${item.sentiment}, source: ${item.source}, link: ${link})`;
       });
+      const report: ReportPayload = {
+        title: 'News analysis report',
+        sections: [
+          {
+            title: 'Summary',
+            rows: {
+              symbol: options.symbol ?? 'all',
+              items: news.length,
+            },
+          },
+          {
+            title: 'Items',
+            rows: {
+              list: items.join('\n'),
+            },
+          },
+        ],
+      };
 
+      let llmSummary: { summary: string; scenarios: string[] } | null = null;
       if (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY) {
         const llm = new OpenAILlmClient();
-        const analysis = await llm.analyze(
+        llmSummary = await llm.analyze(
           {
             news,
             symbol: options.symbol,
           } as any,
           'news'
         );
-        console.log(`\nLLM summary:\n${analysis.summary}`);
-        console.log(`Scenarios:`, analysis.scenarios);
       }
+      if (llmSummary) {
+        report.sections.push({
+          title: 'LLM analysis',
+          rows: {
+            summary: llmSummary.summary,
+            scenarios: llmSummary.scenarios.join('; '),
+          },
+        });
+      }
+
+      renderReportWithSave('analysis:analyze-news', outputFormat, report, options, options.symbol ?? 'all');
     } catch (error) {
       console.error('Error analyzing news:', error);
     }
@@ -1768,9 +1874,11 @@ Examples:
   .option('--report <path>', 'External performance report (CSV/TSV/Excel) to adjust risk')
   .option('--save-chart', 'Save PNG and ASCII chart for the simulation')
   .option('--export-report <format>', 'Export simulation report as pdf|json|csv')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .option('--no-llm', 'Disable LLM post-run analysis')
   .action(async (options) => {
-    console.log(`\nStarting TradeBot simulation for ${options.symbol}...\n`);
+    const outputFormat = readOutputFormat(options);
 
     const reportSummary = options.report ? await parseReport(options.report) : undefined;
 
@@ -1808,7 +1916,13 @@ Examples:
     );
 
     const report = await bot.runSimulation();
-    console.log('\n' + formatSimulationReport(report));
+    renderReportWithSave(
+      'trade-sim',
+      outputFormat,
+      buildSimulationReportPayload(options.symbol, options.timeframe, report),
+      options,
+      options.symbol
+    );
 
     if (options.saveChart) {
       const pngPath = await renderChartPNG(candles, 'chart.png');
