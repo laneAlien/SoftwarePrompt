@@ -35,6 +35,11 @@ export interface AppConfig {
   output?: OutputDefaults;
 }
 
+export interface ResolvedConfigPath {
+  path: string;
+  exists: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -96,11 +101,19 @@ function normalizeConfig(raw: unknown): AppConfig {
   };
 }
 
-export function loadConfig(configPath?: string, cwd: string = process.cwd()): AppConfig {
+export function resolveConfigPath(configPath?: string, cwd: string = process.cwd()): ResolvedConfigPath {
   const resolvedPath = configPath
     ? path.resolve(cwd, configPath)
     : path.resolve(cwd, '.softwarepromptrc.json');
-  if (!fs.existsSync(resolvedPath)) {
+  return {
+    path: resolvedPath,
+    exists: fs.existsSync(resolvedPath),
+  };
+}
+
+export function loadConfig(configPath?: string, cwd: string = process.cwd()): AppConfig {
+  const { path: resolvedPath, exists } = resolveConfigPath(configPath, cwd);
+  if (!exists) {
     if (configPath) {
       throw new Error(`Config file not found: ${resolvedPath}`);
     }

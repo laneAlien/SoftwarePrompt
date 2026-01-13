@@ -26,7 +26,7 @@ import { fetchFundingRate } from './indicators/fundingRate';
 import { clearOhlcvCache } from './real/exchangeUtils';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
-import { FeeDefaults, loadConfig } from './core/config';
+import { AppConfig, FeeDefaults, loadConfig, resolveConfigPath } from './core/config';
 import { sma } from './indicators/sma';
 import {
   renderAsciiChart,
@@ -243,6 +243,19 @@ function parseNumber(value: string | undefined, fallback: number): number {
 function readStringOption(options: Record<string, unknown>, key: string): string | undefined {
   const value = options[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+function resolveConfigInfo(options: Record<string, unknown>): {
+  config: AppConfig;
+  configPath: string;
+  configExists: boolean;
+  configSource: 'cli' | 'default';
+} {
+  const configOption = readStringOption(options, 'config');
+  const configSource = configOption ? 'cli' : 'default';
+  const { path: configPath, exists: configExists } = resolveConfigPath(configOption);
+  const config = loadConfig(configOption);
+  return { config, configPath, configExists, configSource };
 }
 
 function parseOptionalNumber(value: string | undefined): number | undefined {
@@ -817,6 +830,18 @@ function buildProfileSummaryRows(params: {
   };
 }
 
+function buildConfigSummaryRows(params: {
+  configPath: string;
+  configExists: boolean;
+  configSource: 'cli' | 'default';
+}): Record<string, ReportValue> {
+  return {
+    config_path: params.configExists ? params.configPath : 'none',
+    config_source: params.configSource,
+    config_loaded: params.configExists,
+  };
+}
+
 function buildFeeSummaryRows(
   feeModel: string,
   feeInputs: ReturnType<typeof resolveFeeInputs>
@@ -993,7 +1018,7 @@ async function promptYesNo(rl: readline.Interface, label: string, defaultValue: 
 async function handleDecide(options: Record<string, unknown>): Promise<void> {
   try {
     const outputFormat = readOutputFormat(options);
-    const config = loadConfig(readStringOption(options, 'config'));
+    const { config, configPath, configExists, configSource } = resolveConfigInfo(options);
     const outputDefaults = config.output ?? {};
     const feeDefaults = config.fees ?? {};
     const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
@@ -1026,7 +1051,23 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
       renderReportWithSave(
         'decide',
         outputFormat,
-        buildStatusReport('No OHLCV data available to decide.'),
+        {
+          title: 'Status',
+          sections: [
+            {
+              title: 'Config',
+              rows: buildConfigSummaryRows({ configPath, configExists, configSource }),
+            },
+            {
+              title: 'Profile',
+              rows: buildProfileSummaryRows({ profile: profileName }),
+            },
+            {
+              title: 'Message',
+              rows: { message: 'No OHLCV data available to decide.' },
+            },
+          ],
+        },
         options,
         symbol
       );
@@ -1105,18 +1146,22 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
               confidence,
             },
           },
-          {
-            title: 'Strategy',
-            rows: {
-              strategy: strategyPlan.label,
-              recommended_mode: recommendedMode,
-            },
+        {
+          title: 'Strategy',
+          rows: {
+            strategy: strategyPlan.label,
+            recommended_mode: recommendedMode,
           },
-          {
-            title: 'Profile',
-            rows: buildProfileSummaryRows({
-              profile: profileName,
-              grids: profileDefaults.grids,
+        },
+        {
+          title: 'Config',
+          rows: buildConfigSummaryRows({ configPath, configExists, configSource }),
+        },
+        {
+          title: 'Profile',
+          rows: buildProfileSummaryRows({
+            profile: profileName,
+            grids: profileDefaults.grids,
               feeModel,
               slippageRate,
               trailStepPercent: profileDefaults.trailStepPercent,
@@ -1147,7 +1192,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
 async function handleBacktestGrid(options: Record<string, unknown>): Promise<void> {
   try {
     const outputFormat = readOutputFormat(options);
-    const config = loadConfig(readStringOption(options, 'config'));
+    const { config, configPath, configExists, configSource } = resolveConfigInfo(options);
     const outputDefaults = config.output ?? {};
     const feeDefaults = config.fees ?? {};
     const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
@@ -1165,6 +1210,7 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       'exchange'
     );
     const mode = resolveConfigString(options, 'mode', ['--mode'], outputDefaults.mode, 'spot').toLowerCase();
+    const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
     const ohlcv = await resolveOhlcv({
       exchange,
       symbol,
@@ -1179,7 +1225,23 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       renderReportWithSave(
         'backtest-grid',
         outputFormat,
-        buildStatusReport('No OHLCV data available for backtest.'),
+        {
+          title: 'Status',
+          sections: [
+            {
+              title: 'Config',
+              rows: buildConfigSummaryRows({ configPath, configExists, configSource }),
+            },
+            {
+              title: 'Profile',
+              rows: buildProfileSummaryRows({ profile: profileName }),
+            },
+            {
+              title: 'Message',
+              rows: { message: 'No OHLCV data available for backtest.' },
+            },
+          ],
+        },
         options,
         symbol
       );
@@ -1189,7 +1251,6 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       throw new Error(`Unsupported mode "${mode}". Use spot or trailing.`);
     }
 
-    const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
     const grids = resolveProfiledNumber(options, 'grids', ['--grids'], profileDefaults.grids, 10);
     const { low, high, allocation } = resolveGridParams(options, ohlcv, { grids });
     const feeModel = resolveProfiledString(
@@ -1252,6 +1313,10 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
     const report = {
       title: 'Grid backtest report',
       sections: [
+        {
+          title: 'Config',
+          rows: buildConfigSummaryRows({ configPath, configExists, configSource }),
+        },
         {
           title: 'Profile',
           rows: buildProfileSummaryRows({
@@ -2137,6 +2202,7 @@ program
   .command('compare')
   .requiredOption('--ledger <file>', 'Path to CSV file')
   .option('--profile <profile>', 'Profile name: default|promo|safe', 'default')
+  .option('--config <path>', 'Config path')
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
@@ -2175,7 +2241,21 @@ Examples:
   .action(async (options) => {
     try {
       const outputFormat = readOutputFormat(options);
-      const symbol = readStringOption(options, 'symbol') ?? 'RAVE/USDT';
+      const { config, configPath, configExists, configSource } = resolveConfigInfo(options);
+      const outputDefaults = config.output ?? {};
+      const feeDefaults = config.fees ?? {};
+      const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
+      const exchange = resolveConfigString(options, 'exchange', ['--exchange'], config.exchange, 'gate');
+      const symbol = resolveConfigString(options, 'symbol', ['--symbol'], defaultSymbol, 'RAVE/USDT');
+      const timeframe = resolveConfigString(options, 'timeframe', ['--timeframe'], outputDefaults.timeframe, '1m');
+      const ohlcvSource = resolveConfigString(
+        options,
+        'ohlcvSource',
+        ['--ohlcv-source'],
+        outputDefaults.ohlcvSource,
+        'cache'
+      );
+      const ohlcvLimit = resolveConfigNumber(options, 'ohlcvLimit', ['--ohlcv-limit'], outputDefaults.limit, 10000);
       const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
       const ledgerPath = readStringOption(options, 'ledger');
       if (!ledgerPath) {
@@ -2183,15 +2263,41 @@ Examples:
       }
       const entries = importLedger(ledgerPath);
       const feeMode = readLedgerFeeMode(options);
+      const resolvedCompareOptions: Record<string, unknown> = {
+        ...options,
+        exchange,
+        symbol,
+        timeframe,
+        ohlcvSource,
+        ohlcvLimit: String(ohlcvLimit),
+      };
       const gtFeeResolution =
-        feeMode === 'ohlcv' ? await resolveGtFeeQuoteResolver(entries, options) : { resolver: undefined, ohlcvCount: 0 };
+        feeMode === 'ohlcv'
+          ? await resolveGtFeeQuoteResolver(entries, resolvedCompareOptions)
+          : { resolver: undefined, ohlcvCount: 0 };
       const gtFeeQuoteResolver = gtFeeResolution.resolver;
       const summary = analyzeLedger(entries, { feeMode, gtFeeQuoteResolver });
       if (!summary.startTime || !summary.endTime) {
         renderReportWithSave(
           'compare',
           outputFormat,
-          buildStatusReport('Not enough trade data to build a report.'),
+          {
+            title: 'Status',
+            sections: [
+              {
+                title: 'Config',
+                rows: buildConfigSummaryRows({ configPath, configExists, configSource }),
+              },
+              {
+                title: 'Profile',
+                rows: buildProfileSummaryRows({ profile: profileName }),
+              },
+              {
+                title: 'Message',
+                rows: { message: 'Not enough trade data to build a report.' },
+              },
+            ],
+          },
           options,
           symbol
         );
@@ -2200,24 +2306,40 @@ Examples:
 
       const { metrics: ledgerMetrics, feesBreakdown } = buildLedgerMetrics(summary);
 
-      const sinceOption = readStringOption(options, 'since');
-      const untilOption = readStringOption(options, 'until');
+      const sinceOption = resolveConfigOptionalString(options, 'since', ['--since'], outputDefaults.since);
+      const untilOption = resolveConfigOptionalString(options, 'until', ['--until'], outputDefaults.until);
       const backtestSince = sinceOption ?? summary.startTime.toISOString();
       const backtestUntil = untilOption ?? summary.endTime.toISOString();
       const ohlcv = await resolveOhlcv({
-        exchange: options.exchange,
+        exchange,
         symbol,
-        timeframe: options.timeframe,
+        timeframe,
         since: backtestSince,
         until: backtestUntil,
-        ohlcvSource: options.ohlcvSource,
-        ohlcvLimit: options.ohlcvLimit,
+        ohlcvSource,
+        ohlcvLimit: String(ohlcvLimit),
       });
       if (!ohlcv.length) {
         renderReportWithSave(
           'compare',
           outputFormat,
-          buildStatusReport('No OHLCV data available for the requested period.'),
+          {
+            title: 'Status',
+            sections: [
+              {
+                title: 'Config',
+                rows: buildConfigSummaryRows({ configPath, configExists, configSource }),
+              },
+              {
+                title: 'Profile',
+                rows: buildProfileSummaryRows({ profile: profileName }),
+              },
+              {
+                title: 'Message',
+                rows: { message: 'No OHLCV data available for the requested period.' },
+              },
+            ],
+          },
           options,
           symbol
         );
@@ -2238,7 +2360,23 @@ Examples:
         renderReportWithSave(
           'compare',
           outputFormat,
-          buildStatusReport('No OHLCV data available for the requested period.'),
+          {
+            title: 'Status',
+            sections: [
+              {
+                title: 'Config',
+                rows: buildConfigSummaryRows({ configPath, configExists, configSource }),
+              },
+              {
+                title: 'Profile',
+                rows: buildProfileSummaryRows({ profile: profileName }),
+              },
+              {
+                title: 'Message',
+                rows: { message: 'No OHLCV data available for the requested period.' },
+              },
+            ],
+          },
           options,
           symbol
         );
@@ -2252,16 +2390,18 @@ Examples:
         'feeModel',
         ['--fee-model'],
         profileDefaults.feeModel,
-        'flat'
+        'flat',
+        feeDefaults.model
       ).toLowerCase();
       const slippageRate = resolveProfiledNumber(
         options,
         'slippageRate',
         ['--slippage-rate'],
         profileDefaults.slippageRate,
-        0
+        0,
+        feeDefaults.slippageRate
       );
-      const feeInputs = resolveFeeInputs(options, {}, profileDefaults, slippageRate);
+      const feeInputs = resolveFeeInputs(options, feeDefaults, profileDefaults, slippageRate);
       const feeOptions = buildFeeOptions(feeModel, feeInputs);
       const gridResult = runGridBacktest({
         ohlcv: periodCandles,
@@ -2275,6 +2415,10 @@ Examples:
       const report = {
         title: 'Ledger comparison report',
         sections: [
+          {
+            title: 'Config',
+            rows: buildConfigSummaryRows({ configPath, configExists, configSource }),
+          },
           {
             title: 'Ledger summary',
             rows: {
@@ -2297,7 +2441,7 @@ Examples:
             rows: {
               since: backtestSince,
               until: backtestUntil,
-              ohlcv_source: options.ohlcvSource,
+              ohlcv_source: ohlcvSource,
             },
           },
           {
