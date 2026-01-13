@@ -13,6 +13,9 @@ import {
   OutputFormat,
   ReportPayload,
   ReportValue,
+  formatJsonReport,
+  formatMarkdownReport,
+  formatTextReport,
   printJsonReport,
   printMarkdownReport,
   printTextReport,
@@ -52,6 +55,58 @@ function renderReport(format: OutputFormat, report: ReportPayload): void {
     return;
   }
   printTextReport(report);
+}
+
+function sanitizeFilePart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+/, '').replace(/-+$/, '') || 'unknown';
+}
+
+function formatReportOutput(format: OutputFormat, report: ReportPayload): string {
+  if (format === 'json') {
+    return formatJsonReport(report);
+  }
+  if (format === 'md') {
+    return formatMarkdownReport(report);
+  }
+  return formatTextReport(report);
+}
+
+function saveReport(
+  commandName: string,
+  symbol: string,
+  format: OutputFormat,
+  report: ReportPayload
+): string {
+  const now = new Date();
+  const dateFolder = now.toISOString().slice(0, 10);
+  const timestamp = now.toISOString().replace(/[:.]/g, '-');
+  const safeCommand = sanitizeFilePart(commandName);
+  const safeSymbol = sanitizeFilePart(symbol);
+  const extension = format === 'json' ? 'json' : 'md';
+  const dir = path.join('reports', dateFolder);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `report_${safeCommand}_${safeSymbol}_${timestamp}.${extension}`);
+  const content = formatReportOutput(format, report);
+  fs.writeFileSync(filePath, content);
+  return filePath;
+}
+
+function renderReportWithSave(
+  commandName: string,
+  outputFormat: OutputFormat,
+  report: ReportPayload,
+  options: Record<string, unknown>,
+  symbol: string
+): void {
+  renderReport(outputFormat, report);
+  if (options.saveReport) {
+    if (outputFormat === 'text') {
+      console.error('Saving report requires --output md|json.');
+      return;
+    }
+    const savedPath = saveReport(commandName, symbol, outputFormat, report);
+    console.log(`Saved report -> ${savedPath}`);
+  }
 }
 
 function buildStatusReport(message: string): ReportPayload {
@@ -640,6 +695,7 @@ program
   .option('--min-slope <number>', 'Minimum MA30 slope to confirm trend', '0.0001')
   .option('--min-distance <number>', 'Minimum price distance to MA30', '0.001')
   .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .action(async (options) => {
     const outputFormat = readOutputFormat(options);
     const limit = parseInt(options.limit, 10);
@@ -648,7 +704,13 @@ program
       until: options.until,
     });
     if (!ohlcv.length) {
-      renderReport(outputFormat, buildStatusReport('No OHLCV data available to analyze regime.'));
+      renderReportWithSave(
+        'analyze-regime',
+        outputFormat,
+        buildStatusReport('No OHLCV data available to analyze regime.'),
+        options,
+        options.symbol
+      );
       return;
     }
     const parsedSlopeWindow = Number(options.slopeWindow);
@@ -660,7 +722,7 @@ program
     const { regime, slope, distance } = detectRegime(ohlcv, { slopeWindow, minSlope, minDistance });
     const periodStart = ohlcv.length ? new Date(ohlcv[0].timestamp).toISOString() : 'n/a';
     const periodEnd = ohlcv.length ? new Date(ohlcv[ohlcv.length - 1].timestamp).toISOString() : 'n/a';
-    renderReport(outputFormat, {
+    const report = {
       title: 'Regime analysis',
       sections: [
         {
@@ -676,7 +738,8 @@ program
           },
         },
       ],
-    });
+    };
+    renderReportWithSave('analyze-regime', outputFormat, report, options, options.symbol);
   });
 
 program
@@ -704,6 +767,7 @@ program
   .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .action(async (options) => {
     try {
       const outputFormat = readOutputFormat(options);
@@ -736,7 +800,13 @@ program
         ohlcvSource,
       });
       if (!ohlcv.length) {
-        renderReport(outputFormat, buildStatusReport('No OHLCV data available to decide.'));
+        renderReportWithSave(
+          'decide',
+          outputFormat,
+          buildStatusReport('No OHLCV data available to decide.'),
+          options,
+          symbol
+        );
         return;
       }
       const slopeWindow = parseNumber(readStringOption(options, 'slopeWindow'), 5);
@@ -789,7 +859,10 @@ program
       });
       const recommendationTitle =
         strategy === 'no-trade' ? 'Recommended command (no-trade, for evaluation only)' : 'Recommended command';
-      renderReport(outputFormat, {
+      renderReportWithSave(
+        'decide',
+        outputFormat,
+        {
         title: 'Decision report',
         sections: [
           {
@@ -843,7 +916,10 @@ program
             },
           },
         ],
-      });
+      },
+        options,
+        symbol
+      );
     } catch (error) {
       console.error('Error deciding strategy:', error);
     }
@@ -873,6 +949,7 @@ program
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .action(async (file, options) => {
       try {
         const outputFormat = readOutputFormat(options);
@@ -883,7 +960,13 @@ program
         const gtFeeQuoteResolver = gtFeeResolution.resolver;
         const summary = analyzeLedger(entries, { feeMode, gtFeeQuoteResolver });
         if (!summary.startTime || !summary.endTime) {
-          renderReport(outputFormat, buildStatusReport('Not enough trade data to build a report.'));
+          renderReportWithSave(
+            'import-ledger',
+            outputFormat,
+            buildStatusReport('Not enough trade data to build a report.'),
+            options,
+            options.symbol
+          );
           return;
         }
 
@@ -901,7 +984,13 @@ program
         const endTimeMs = summary.endTime.getTime();
         const periodCandles = ohlcv.filter((candle) => candle.timestamp <= endTimeMs);
         if (!periodCandles.length) {
-          renderReport(outputFormat, buildStatusReport('No OHLCV data available for the ledger period.'));
+          renderReportWithSave(
+            'import-ledger',
+            outputFormat,
+            buildStatusReport('No OHLCV data available for the ledger period.'),
+            options,
+            options.symbol
+          );
           return;
         }
 
@@ -916,7 +1005,7 @@ program
           ...feeOptions,
         });
 
-        renderReport(outputFormat, {
+        const report = {
           title: 'Ledger import report',
           sections: [
             {
@@ -953,7 +1042,8 @@ program
               },
             },
           ],
-        });
+        };
+        renderReportWithSave('import-ledger', outputFormat, report, options, options.symbol);
       } catch (error) {
         console.error('Error importing ledger:', error);
       }
@@ -993,6 +1083,7 @@ program
   .option('--stop-on-ma30 <enabled>', 'Stop when close drops below MA30 (true|false)')
   .option('--stop-on-low-closes <count>', 'Stop after N closes below grid low')
   .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .action(async (options) => {
     try {
       const outputFormat = readOutputFormat(options);
@@ -1025,7 +1116,13 @@ program
         rebuild: options.rebuild,
       });
       if (!ohlcv.length) {
-        renderReport(outputFormat, buildStatusReport('No OHLCV data available for backtest.'));
+        renderReportWithSave(
+          'backtest-grid',
+          outputFormat,
+          buildStatusReport('No OHLCV data available for backtest.'),
+          options,
+          symbol
+        );
         return;
       }
       if (mode !== 'spot' && mode !== 'trailing') {
@@ -1091,7 +1188,7 @@ program
               stopOnLowCloses,
             })
           : runGridBacktest(commonOptions);
-      renderReport(outputFormat, {
+      const report = {
         title: 'Grid backtest report',
         sections: [
           {
@@ -1111,7 +1208,8 @@ program
             rows: buildMetricsRows(buildGridMetrics(gridResult)),
           },
         ],
-      });
+      };
+      renderReportWithSave('backtest-grid', outputFormat, report, options, symbol);
     } catch (error) {
       console.error('Error running grid backtest:', error);
     }
@@ -1142,6 +1240,7 @@ program
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
   .action(async (file, options) => {
     try {
       const outputFormat = readOutputFormat(options);
@@ -1153,7 +1252,13 @@ program
       const gtFeeQuoteResolver = gtFeeResolution.resolver;
       const summary = analyzeLedger(entries, { feeMode, gtFeeQuoteResolver });
       if (!summary.startTime || !summary.endTime) {
-        renderReport(outputFormat, buildStatusReport('Not enough trade data to build a report.'));
+        renderReportWithSave(
+          'compare',
+          outputFormat,
+          buildStatusReport('Not enough trade data to build a report.'),
+          options,
+          options.symbol
+        );
         return;
       }
 
@@ -1169,13 +1274,25 @@ program
         ohlcvLimit: options.ohlcvLimit,
       });
       if (!ohlcv.length) {
-        renderReport(outputFormat, buildStatusReport('No OHLCV data available for the ledger period.'));
+        renderReportWithSave(
+          'compare',
+          outputFormat,
+          buildStatusReport('No OHLCV data available for the ledger period.'),
+          options,
+          options.symbol
+        );
         return;
       }
       const endTimeMs = summary.endTime.getTime();
       const periodCandles = ohlcv.filter((candle) => candle.timestamp <= endTimeMs);
       if (!periodCandles.length) {
-        renderReport(outputFormat, buildStatusReport('No OHLCV data available for the ledger period.'));
+        renderReportWithSave(
+          'compare',
+          outputFormat,
+          buildStatusReport('No OHLCV data available for the ledger period.'),
+          options,
+          options.symbol
+        );
         return;
       }
 
@@ -1205,7 +1322,7 @@ program
         ...feeOptions,
       });
 
-      renderReport(outputFormat, {
+      const report = {
         title: 'Ledger comparison report',
         sections: [
           {
@@ -1252,7 +1369,8 @@ program
             },
           },
         ],
-      });
+      };
+      renderReportWithSave('compare', outputFormat, report, options, options.symbol);
     } catch (error) {
       console.error('Error comparing ledger to backtest:', error);
     }

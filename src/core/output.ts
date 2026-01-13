@@ -23,37 +23,55 @@ function escapeMarkdown(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\n/g, '<br />');
 }
 
-export function printTextReport(report: ReportPayload): void {
+export function formatTextReport(report: ReportPayload): string {
+  const lines: string[] = [];
   if (report.title) {
-    console.log(report.title);
+    lines.push(report.title);
   }
   report.sections.forEach((section) => {
     if (section.title) {
-      console.log(`\n${section.title}`);
+      lines.push('');
+      lines.push(section.title);
     }
     Object.entries(section.rows).forEach(([key, value]) => {
-      console.log(`${key}: ${formatValue(value)}`);
+      lines.push(`${key}: ${formatValue(value)}`);
     });
   });
+  return lines.join('\n');
+}
+
+export function formatJsonReport(report: unknown): string {
+  return JSON.stringify(report, null, 2);
+}
+
+export function formatMarkdownReport(report: ReportPayload): string {
+  const lines: string[] = [];
+  if (report.title) {
+    lines.push(`# ${report.title}`);
+  }
+  report.sections.forEach((section) => {
+    if (section.title) {
+      lines.push('');
+      lines.push(`## ${section.title}`);
+    }
+    lines.push('| Metric | Value |');
+    lines.push('| --- | --- |');
+    Object.entries(section.rows).forEach(([key, value]) => {
+      const rendered = escapeMarkdown(formatValue(value));
+      lines.push(`| ${escapeMarkdown(key)} | ${rendered} |`);
+    });
+  });
+  return lines.join('\n');
+}
+
+export function printTextReport(report: ReportPayload): void {
+  console.log(formatTextReport(report));
 }
 
 export function printJsonReport(report: unknown): void {
-  console.log(JSON.stringify(report, null, 2));
+  console.log(formatJsonReport(report));
 }
 
 export function printMarkdownReport(report: ReportPayload): void {
-  if (report.title) {
-    console.log(`# ${report.title}`);
-  }
-  report.sections.forEach((section) => {
-    if (section.title) {
-      console.log(`\n## ${section.title}`);
-    }
-    console.log('| Metric | Value |');
-    console.log('| --- | --- |');
-    Object.entries(section.rows).forEach(([key, value]) => {
-      const rendered = escapeMarkdown(formatValue(value));
-      console.log(`| ${escapeMarkdown(key)} | ${rendered} |`);
-    });
-  });
+  console.log(formatMarkdownReport(report));
 }
