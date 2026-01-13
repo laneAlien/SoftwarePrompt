@@ -983,10 +983,11 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
       'exchange'
     );
     const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
+    const decisionTimeframe = '15m';
     const ohlcv = await resolveOhlcv({
       exchange,
       symbol,
-      timeframe: '15m',
+      timeframe: decisionTimeframe,
       since,
       until,
       limit: String(limit),
@@ -1008,8 +1009,12 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
     const regimeResult = detectRegime(ohlcv, { slopeWindow, minSlope, minDistance });
     const confidence = calculateRegimeConfidence(regimeResult, { minSlope, minDistance });
 
-    const strategy =
-      regimeResult.regime === 'TREND' ? 'trailing' : regimeResult.regime === 'RANGE' ? 'spot' : 'no-trade';
+    const strategyPlan =
+      regimeResult.regime === 'TREND'
+        ? { label: 'trailing grid', mode: 'trailing' }
+        : regimeResult.regime === 'RANGE'
+          ? { label: 'spot grid', mode: 'spot' }
+          : { label: 'no-trade', mode: undefined };
 
     const feeModel = resolveProfiledString(
       options,
@@ -1028,7 +1033,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
       feeDefaults.slippageRate
     );
     const feeInputs = resolveFeeInputs(options, feeDefaults, profileDefaults, slippageRate);
-    const recommendedMode = strategy === 'no-trade' ? 'spot' : strategy;
+    const recommendedMode = strategyPlan.mode ?? 'spot';
     const recommendedCommand = buildRecommendedCommand({
       exchange,
       symbol,
@@ -1051,7 +1056,9 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
       mode: recommendedMode,
     });
     const recommendationTitle =
-      strategy === 'no-trade' ? 'Recommended command (no-trade, for evaluation only)' : 'Recommended command';
+      strategyPlan.label === 'no-trade'
+        ? 'Recommended command (no-trade, for evaluation only)'
+        : 'Recommended command';
     renderReportWithSave(
       'decide',
       outputFormat,
@@ -1062,7 +1069,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
             title: 'Regime',
             rows: {
               symbol,
-              ohlcv_timeframe: '15m',
+              ohlcv_timeframe: decisionTimeframe,
               regime: regimeResult.regime,
               slope: regimeResult.slope.toFixed(6),
               distance: regimeResult.distance.toFixed(6),
@@ -1072,7 +1079,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
           {
             title: 'Strategy',
             rows: {
-              strategy,
+              strategy: strategyPlan.label,
               recommended_mode: recommendedMode,
             },
           },
