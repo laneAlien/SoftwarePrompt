@@ -45,6 +45,16 @@ function buildGridState(low: number, high: number, grids: number): GridState {
   };
 }
 
+function resolveGridIndex(price: number, state: GridState, grids: number): number {
+  if (price <= state.low) return 0;
+  if (price >= state.high) return grids;
+  return Math.floor((price - state.low) / state.step);
+}
+
+function resolveGridPrice(state: GridState, index: number): number {
+  return state.low + state.step * index;
+}
+
 function shiftRange(state: GridState, grids: number, direction: 'up' | 'down', trailStep: number): GridState {
   const multiplier = direction === 'up' ? 1 + trailStep : 1 - trailStep;
   const low = state.low * multiplier;
@@ -103,86 +113,92 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
   let maSum = 0;
   const maWindow: number[] = [];
   let belowLowCount = 0;
-  let lastPrice = ohlcv[0].close;
+  let lastPrice = ohlcv[0].open;
+  let currentIndex: number | null = resolveGridIndex(lastPrice, state, grids);
+
+  const executeMove = (fromPrice: number, toPrice: number): void => {
+    if (fromPrice === toPrice) {
+      currentIndex = resolveGridIndex(toPrice, state, grids);
+      return;
+    }
+
+    const fromIndex = currentIndex ?? resolveGridIndex(fromPrice, state, grids);
+    const toIndex = resolveGridIndex(toPrice, state, grids);
+
+    if (toIndex > fromIndex) {
+      for (let i = fromIndex + 1; i <= toIndex; i += 1) {
+        const levelPrice = resolveGridPrice(state, i);
+        const qty = orderValue / levelPrice;
+        if (position >= qty) {
+          position -= qty;
+          balance += orderValue;
+          turnover += orderValue;
+          fees += orderValue * feeRate;
+          tradesCount += 1;
+        }
+      }
+    } else if (toIndex < fromIndex) {
+      for (let i = fromIndex - 1; i >= toIndex; i -= 1) {
+        if (balance >= orderValue) {
+          const levelPrice = resolveGridPrice(state, i);
+          const qty = orderValue / levelPrice;
+          position += qty;
+          balance -= orderValue;
+          turnover += orderValue;
+          fees += orderValue * feeRate;
+          tradesCount += 1;
+        }
+      }
+    }
+
+    currentIndex = toIndex;
+  };
 
   for (const candle of ohlcv) {
-    const price = candle.close;
-    lastPrice = price;
+    const { open, high, low, close } = candle;
+    lastPrice = close;
 
-    if (trailStep > 0 && (price > state.high || price < state.low)) {
-      state =
-        price > state.high
-          ? shiftRange(state, grids, 'up', trailStep)
-          : shiftRange(state, grids, 'down', trailStep);
+    if (trailStep > 0 && (high > state.high || low < state.low)) {
+      const shouldShiftUp =
+        high > state.high && (close >= state.high || low >= state.low || close >= open);
+      const direction = shouldShiftUp ? 'up' : 'down';
+      state = shiftRange(state, grids, direction, trailStep);
+      currentIndex = resolveGridIndex(open, state, grids);
     }
 
-    const buyLevels = state.levels.filter((level) => level < lastPrice && candle.low <= level);
-    const sellLevels = state.levels.filter((level) => level > lastPrice && candle.high >= level);
-
-    for (let i = buyLevels.length - 1; i >= 0; i -= 1) {
-      const level = buyLevels[i];
-      const isTaker = candle.open <= level;
-      const executionPrice = resolveExecutionPrice(level, 'buy', isTaker, slippageRate);
-      const quoteCost = orderValue;
-      if (quoteBalance < quoteCost || executionPrice <= 0) {
-        continue;
-      }
-
-      const qty = quoteCost / executionPrice;
-      quoteBalance -= quoteCost;
-      baseBalance += qty;
-      turnover += quoteCost;
-      const feeRate = isTaker ? takerFeeRate : makerFeeRate;
-      const fee = quoteCost * feeRate;
-      feesTotal += fee;
-      quoteBalance -= fee;
-      tradesCount += 1;
+    const moves: Array<[number, number]> = [];
+    if (close >= open) {
+      moves.push([open, low], [low, high], [high, close]);
+    } else {
+      moves.push([open, high], [high, low], [low, close]);
     }
 
-    for (const level of sellLevels) {
-      const isTaker = candle.open >= level;
-      const executionPrice = resolveExecutionPrice(level, 'sell', isTaker, slippageRate);
-      if (executionPrice <= 0) {
-        continue;
-      }
-      const qty = orderValue / executionPrice;
-      if (baseBalance < qty) {
-        continue;
-      }
-
-      baseBalance -= qty;
-      const proceeds = orderValue;
-      quoteBalance += proceeds;
-      turnover += proceeds;
-      const feeRate = isTaker ? takerFeeRate : makerFeeRate;
-      const fee = proceeds * feeRate;
-      feesTotal += fee;
-      quoteBalance -= fee;
-      tradesCount += 1;
+    for (const [fromPrice, toPrice] of moves) {
+      executeMove(fromPrice, toPrice);
     }
 
-    const currentEquity = quoteBalance + baseBalance * price;
+    const currentEquity = balance + position * close;
     if (currentEquity > peak) peak = currentEquity;
     const dd = peak > 0 ? (peak - currentEquity) / peak : 0;
     if (dd > maxDD) maxDD = dd;
 
     if (options.stopOnMa30) {
-      maWindow.push(price);
-      maSum += price;
+      maWindow.push(close);
+      maSum += close;
       if (maWindow.length > 30) {
         maSum -= maWindow.shift() ?? 0;
       }
 
       if (maWindow.length === 30) {
         const ma30 = maSum / 30;
-        if (price < ma30) {
+        if (close < ma30) {
           break;
         }
       }
     }
 
     if (options.stopOnLowCloses) {
-      if (price < state.low) {
+      if (close < state.low) {
         belowLowCount += 1;
       } else {
         belowLowCount = 0;
