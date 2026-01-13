@@ -13,6 +13,7 @@ export interface GridResult {
 
 export interface GridEngineOptions {
   ohlcv: OHLCV[];
+  stopOhlcv?: OHLCV[];
   low: number;
   high: number;
   grids: number;
@@ -103,6 +104,8 @@ function resolveFeeModel(options: GridEngineOptions): FeeModel {
 
 export function runGridBacktest(options: GridEngineOptions): GridResult {
   const { ohlcv, grids, allocation } = options;
+  const stopOhlcv = options.stopOhlcv ?? ohlcv;
+  const useExternalStops = options.stopOhlcv !== undefined;
 
   if (ohlcv.length === 0 || grids <= 0) {
     return {
@@ -138,6 +141,7 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
   let maSum = 0;
   const maWindow: number[] = [];
   let belowLowCount = 0;
+  let stopIndex = 0;
   let lastPrice = ohlcv[0].open;
   let currentIndex: number | null = resolveGridIndex(lastPrice, state, grids);
 
@@ -184,6 +188,37 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     currentIndex = toIndex;
   };
 
+  const applyStopChecks = (close: number): boolean => {
+    if (options.stopOnMa30) {
+      maWindow.push(close);
+      maSum += close;
+      if (maWindow.length > 30) {
+        maSum -= maWindow.shift() ?? 0;
+      }
+
+      if (maWindow.length === 30) {
+        const ma30 = maSum / 30;
+        if (close < ma30) {
+          return true;
+        }
+      }
+    }
+
+    if (options.stopOnLowCloses) {
+      if (close < state.low) {
+        belowLowCount += 1;
+      } else {
+        belowLowCount = 0;
+      }
+
+      if (belowLowCount >= options.stopOnLowCloses) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
   for (const candle of ohlcv) {
     const { open, high, low, close } = candle;
     lastPrice = close;
@@ -212,31 +247,21 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     const dd = peak > 0 ? (peak - currentEquity) / peak : 0;
     if (dd > maxDD) maxDD = dd;
 
-    if (options.stopOnMa30) {
-      maWindow.push(close);
-      maSum += close;
-      if (maWindow.length > 30) {
-        maSum -= maWindow.shift() ?? 0;
-      }
-
-      if (maWindow.length === 30) {
-        const ma30 = maSum / 30;
-        if (close < ma30) {
+    let stopTriggered = false;
+    if (useExternalStops) {
+      while (stopIndex < stopOhlcv.length && stopOhlcv[stopIndex].timestamp <= candle.timestamp) {
+        if (applyStopChecks(stopOhlcv[stopIndex].close)) {
+          stopTriggered = true;
           break;
         }
+        stopIndex += 1;
       }
+    } else if (applyStopChecks(close)) {
+      stopTriggered = true;
     }
 
-    if (options.stopOnLowCloses) {
-      if (close < state.low) {
-        belowLowCount += 1;
-      } else {
-        belowLowCount = 0;
-      }
-
-      if (belowLowCount >= options.stopOnLowCloses) {
-        break;
-      }
+    if (stopTriggered) {
+      break;
     }
   }
 
