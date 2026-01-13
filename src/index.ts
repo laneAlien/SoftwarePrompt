@@ -52,18 +52,21 @@ function buildLedgerMetrics(summary: LedgerSummary): { metrics: OutputMetrics; f
   const feesBreakdown = Object.entries(summary.feesByCurrency)
     .map(([currency, amount]) => `${amount.toFixed(6)} ${currency}`)
     .join(', ');
-  const feesTotal = Object.entries(summary.feesByCurrency).reduce((sum, [currency, amount]) => {
-    if (['USDT', 'USDC', 'USD', 'BUSD', 'DAI', 'TUSD'].includes(currency)) {
-      return sum + amount;
-    }
-    return sum;
-  }, 0);
+  const feesTotal =
+    typeof summary.totalFeesInQuote === 'number'
+      ? summary.totalFeesInQuote
+      : Object.entries(summary.feesByCurrency).reduce((sum, [currency, amount]) => {
+          if (['USDT', 'USDC', 'USD', 'BUSD', 'DAI', 'TUSD'].includes(currency)) {
+            return sum + amount;
+          }
+          return sum;
+        }, 0);
   return {
     feesTotal,
     feesBreakdown,
     metrics: {
-      pnlGross: summary.realizedPnl,
-      pnlNet: summary.realizedPnl - feesTotal,
+      pnlGross: summary.realizedPnlGross,
+      pnlNet: summary.realizedPnlNet,
       feesTotal,
       feeRatio: summary.feeRatio,
       trades: summary.tradesCount,
