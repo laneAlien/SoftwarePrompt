@@ -18,12 +18,17 @@ export type TradeSide = 'buy' | 'sell';
 
 export interface LedgerSummary {
     tradesCount: number;
-    realizedPnl: number;
+    realizedPnlGross: number;
+    realizedPnlNet: number;
     turnover: number;
     avgProfitPerTrade: number;
     feeRatio: number;
     tradesPerHour: number;
     feesByCurrency: Record<string, number>;
+    totalFeesInQuote: number;
+    totalFeesInGt: number;
+    gtFeeInQuote: number;
+    gtPriceInQuote: number | null;
     startTime: Date | null;
     endTime: Date | null;
 }
@@ -32,7 +37,13 @@ const STABLE_QUOTES = new Set(['USDT', 'USDC', 'USD', 'BUSD', 'DAI', 'TUSD']);
 
 function normalizeAction(actionDesc: string): { actionType: LedgerActionType; side?: TradeSide } {
     const normalized = actionDesc.toLowerCase();
-    if (normalized.includes('комисс') || normalized.includes('commission') || normalized.includes('fee')) {
+    if (
+        normalized.includes('комисс') ||
+        normalized.includes('commission') ||
+        normalized.includes('fee') ||
+        normalized.includes('spot trade fee') ||
+        normalized.includes('spot fee')
+    ) {
         return { actionType: 'fee' };
     }
     if (normalized.includes('куп') || normalized.includes('buy')) {
@@ -41,8 +52,29 @@ function normalizeAction(actionDesc: string): { actionType: LedgerActionType; si
     if (normalized.includes('продаж') || normalized.includes('sell')) {
         return { actionType: 'trade', side: 'sell' };
     }
-    if (normalized.includes('deposit') || normalized.includes('withdraw') || normalized.includes('transfer')) {
+    if (normalized.includes('spot trade') || normalized.includes('spot order') || normalized.includes('trade')) {
+        return { actionType: 'trade' };
+    }
+    if (
+        normalized.includes('deposit') ||
+        normalized.includes('withdraw') ||
+        normalized.includes('transfer') ||
+        normalized.includes('internal transfer') ||
+        normalized.includes('spot transfer') ||
+        normalized.includes('margin transfer')
+    ) {
         return { actionType: 'transfer' };
+    }
+    if (
+        normalized.includes('promo') ||
+        normalized.includes('bonus') ||
+        normalized.includes('reward') ||
+        normalized.includes('rebate') ||
+        normalized.includes('airdrop') ||
+        normalized.includes('lending') ||
+        normalized.includes('staking')
+    ) {
+        return { actionType: 'other' };
     }
     return { actionType: 'other' };
 }
@@ -108,8 +140,10 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
     });
 
     const positionByAsset = new Map<string, { qty: number; cost: number }>();
-    let realizedPnl = 0;
+    let realizedPnlGross = 0;
     let turnover = 0;
+    let gtQuoteValue = 0;
+    let gtBaseValue = 0;
 
     for (const group of tradeGroups.values()) {
         const totals = new Map<string, number>();
@@ -135,6 +169,11 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
         const quoteDelta = totals.get(quoteCurrency) || 0;
         turnover += Math.abs(quoteDelta);
 
+        if (baseCurrency === 'GT' && quoteCurrency) {
+            gtQuoteValue += Math.abs(quoteDelta);
+            gtBaseValue += Math.abs(baseDelta);
+        }
+
         const tradeTime = Date.parse(group[0].time);
         if (!Number.isNaN(tradeTime)) {
             tradeTimes.push(tradeTime);
@@ -153,7 +192,7 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
             const sellQty = Math.abs(baseDelta);
             const proceeds = Math.abs(quoteDelta);
             const avgCost = position.qty > 0 ? position.cost / position.qty : 0;
-            realizedPnl += proceeds - avgCost * sellQty;
+            realizedPnlGross += proceeds - avgCost * sellQty;
             position.qty = Math.max(0, position.qty - sellQty);
             position.cost = Math.max(0, position.cost - avgCost * sellQty);
         }
@@ -172,17 +211,27 @@ export function analyzeLedger(entries: LedgerEntry[]): LedgerSummary {
         return sum;
     }, 0);
 
-    const avgProfitPerTrade = tradesCount > 0 ? realizedPnl / tradesCount : 0;
-    const feeRatio = turnover > 0 ? totalFeesInQuote / turnover : 0;
+    const totalFeesInGt = feesByCurrency.GT || 0;
+    const gtPriceInQuote = gtBaseValue > 0 ? gtQuoteValue / gtBaseValue : null;
+    const gtFeeInQuote = gtPriceInQuote ? totalFeesInGt * gtPriceInQuote : 0;
+    const totalFeesInQuoteWithGt = totalFeesInQuote + gtFeeInQuote;
+    const realizedPnlNet = realizedPnlGross - totalFeesInQuoteWithGt;
+    const avgProfitPerTrade = tradesCount > 0 ? realizedPnlNet / tradesCount : 0;
+    const feeRatio = turnover > 0 ? totalFeesInQuoteWithGt / turnover : 0;
 
     return {
         tradesCount,
-        realizedPnl,
+        realizedPnlGross,
+        realizedPnlNet,
         turnover,
         avgProfitPerTrade,
         feeRatio,
         tradesPerHour,
         feesByCurrency,
+        totalFeesInQuote: totalFeesInQuoteWithGt,
+        totalFeesInGt,
+        gtFeeInQuote,
+        gtPriceInQuote,
         startTime,
         endTime
     };
