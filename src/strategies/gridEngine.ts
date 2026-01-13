@@ -41,6 +41,10 @@ function resolveGridIndex(price: number, state: GridState, grids: number): numbe
   return Math.floor((price - state.low) / state.step);
 }
 
+function resolveGridPrice(state: GridState, index: number): number {
+  return state.low + state.step * index;
+}
+
 function shiftRange(state: GridState, grids: number, direction: 'up' | 'down', trailStep: number): GridState {
   const multiplier = direction === 'up' ? 1 + trailStep : 1 - trailStep;
   const low = state.low * multiplier;
@@ -78,77 +82,96 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
   let position = 0;
   let balance = allocation;
   let peak = allocation;
-  let currentIndex: number | null = null;
 
   let maSum = 0;
   const maWindow: number[] = [];
   let belowLowCount = 0;
-  let lastPrice = ohlcv[0].close;
+  let lastPrice = ohlcv[0].open;
+  let currentIndex: number | null = resolveGridIndex(lastPrice, state, grids);
 
-  for (const candle of ohlcv) {
-    const price = candle.close;
-    lastPrice = price;
-
-    if (trailStep > 0 && (price > state.high || price < state.low)) {
-      state =
-        price > state.high
-          ? shiftRange(state, grids, 'up', trailStep)
-          : shiftRange(state, grids, 'down', trailStep);
-      currentIndex = resolveGridIndex(price, state, grids);
+  const executeMove = (fromPrice: number, toPrice: number): void => {
+    if (fromPrice === toPrice) {
+      currentIndex = resolveGridIndex(toPrice, state, grids);
+      return;
     }
 
-    const newIndex = resolveGridIndex(price, state, grids);
-    if (currentIndex === null) {
-      currentIndex = newIndex;
-    } else if (newIndex !== currentIndex) {
-      if (newIndex > currentIndex) {
-        for (let i = currentIndex + 1; i <= newIndex; i += 1) {
-          const qty = orderValue / price;
-          if (position >= qty) {
-            position -= qty;
-            balance += orderValue;
-            turnover += orderValue;
-            fees += orderValue * feeRate;
-            tradesCount += 1;
-          }
-        }
-      } else {
-        for (let i = currentIndex - 1; i >= newIndex; i -= 1) {
-          if (balance >= orderValue) {
-            const qty = orderValue / price;
-            position += qty;
-            balance -= orderValue;
-            turnover += orderValue;
-            fees += orderValue * feeRate;
-            tradesCount += 1;
-          }
+    const fromIndex = currentIndex ?? resolveGridIndex(fromPrice, state, grids);
+    const toIndex = resolveGridIndex(toPrice, state, grids);
+
+    if (toIndex > fromIndex) {
+      for (let i = fromIndex + 1; i <= toIndex; i += 1) {
+        const levelPrice = resolveGridPrice(state, i);
+        const qty = orderValue / levelPrice;
+        if (position >= qty) {
+          position -= qty;
+          balance += orderValue;
+          turnover += orderValue;
+          fees += orderValue * feeRate;
+          tradesCount += 1;
         }
       }
-      currentIndex = newIndex;
+    } else if (toIndex < fromIndex) {
+      for (let i = fromIndex - 1; i >= toIndex; i -= 1) {
+        if (balance >= orderValue) {
+          const levelPrice = resolveGridPrice(state, i);
+          const qty = orderValue / levelPrice;
+          position += qty;
+          balance -= orderValue;
+          turnover += orderValue;
+          fees += orderValue * feeRate;
+          tradesCount += 1;
+        }
+      }
     }
 
-    const currentEquity = balance + position * price;
+    currentIndex = toIndex;
+  };
+
+  for (const candle of ohlcv) {
+    const { open, high, low, close } = candle;
+    lastPrice = close;
+
+    if (trailStep > 0 && (high > state.high || low < state.low)) {
+      const shouldShiftUp =
+        high > state.high && (close >= state.high || low >= state.low || close >= open);
+      const direction = shouldShiftUp ? 'up' : 'down';
+      state = shiftRange(state, grids, direction, trailStep);
+      currentIndex = resolveGridIndex(open, state, grids);
+    }
+
+    const moves: Array<[number, number]> = [];
+    if (close >= open) {
+      moves.push([open, low], [low, high], [high, close]);
+    } else {
+      moves.push([open, high], [high, low], [low, close]);
+    }
+
+    for (const [fromPrice, toPrice] of moves) {
+      executeMove(fromPrice, toPrice);
+    }
+
+    const currentEquity = balance + position * close;
     if (currentEquity > peak) peak = currentEquity;
     const dd = peak > 0 ? (peak - currentEquity) / peak : 0;
     if (dd > maxDD) maxDD = dd;
 
     if (options.stopOnMa30) {
-      maWindow.push(price);
-      maSum += price;
+      maWindow.push(close);
+      maSum += close;
       if (maWindow.length > 30) {
         maSum -= maWindow.shift() ?? 0;
       }
 
       if (maWindow.length === 30) {
         const ma30 = maSum / 30;
-        if (price < ma30) {
+        if (close < ma30) {
           break;
         }
       }
     }
 
     if (options.stopOnLowCloses) {
-      if (price < state.low) {
+      if (close < state.low) {
         belowLowCount += 1;
       } else {
         belowLowCount = 0;
