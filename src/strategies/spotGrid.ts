@@ -1,11 +1,22 @@
+import { OHLCV } from '../real/ohlcv';
+import { calculateFee, FeeModelGate } from '../core/feeModelGate';
+
+export interface SlippageModel {
+    maker: number;
+    taker: number;
+}
+
 export interface GridResult {
     pnlGross: number;
     pnlNet: number;
     maxDD: number;
     tradesCount: number;
     turnover: number;
-    fees: number;
+    feesGross: number;
+    feesNet: number;
     feeRatio: number;
+    finalBase: number;
+    finalQuote: number;
 }
 
 export function backtestSpotGrid(
@@ -145,5 +156,3 @@ export function backtestSpotGrid(
         feeRatio: turnover > 0 ? fees / turnover : 0
     };
 }
-
-import { OHLCV } from '../real/ohlcv';
