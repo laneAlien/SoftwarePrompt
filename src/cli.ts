@@ -1066,6 +1066,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
             title: 'Regime',
             rows: {
               symbol,
+              ohlcv_timeframe: '15m',
               regime: regimeResult.regime,
               slope: regimeResult.slope.toFixed(6),
               distance: regimeResult.distance.toFixed(6),
