@@ -24,6 +24,11 @@ interface GridFeeOptions {
   feeRate?: number;
   makerFeeRate?: number;
   takerFeeRate?: number;
+  gtDiscountRate?: number;
+  voucherDiscountType?: 'percent' | 'fixed';
+  voucherDiscountValue?: number;
+  minimumFee?: number;
+  roundingDecimals?: number;
   slippageRate?: number;
 }
 
@@ -36,6 +41,12 @@ function parseNumber(value: string | undefined, fallback: number): number {
 function readStringOption(options: Record<string, unknown>, key: string): string | undefined {
   const value = options[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+function parseOptionalNumber(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function formatMetrics(label: string, metrics: OutputMetrics): void {
@@ -104,10 +115,35 @@ function resolveFeeOptions(options: Record<string, unknown>): GridFeeOptions {
   const makerFeeRate = parseNumber(readStringOption(options, 'makerFeeRate'), 0.001);
   const takerFeeRate = parseNumber(readStringOption(options, 'takerFeeRate'), 0.002);
   const slippageRate = parseNumber(readStringOption(options, 'slippageRate'), 0);
+  const gtDiscountRate = parseOptionalNumber(readStringOption(options, 'gtDiscountRate'));
+  const voucherDiscountType = readStringOption(options, 'voucherDiscountType');
+  const voucherDiscountValue = parseOptionalNumber(readStringOption(options, 'voucherDiscountValue'));
+  const minimumFee = parseOptionalNumber(readStringOption(options, 'minimumFee'));
+  const roundingDecimalsRaw = parseOptionalNumber(readStringOption(options, 'feeRoundingDecimals'));
+  const roundingDecimals = roundingDecimalsRaw === undefined ? undefined : Math.trunc(roundingDecimalsRaw);
+  const normalizedVoucherType =
+    voucherDiscountType === 'percent' || voucherDiscountType === 'fixed' ? voucherDiscountType : undefined;
   if (feeModel === 'maker-taker') {
-    return { makerFeeRate, takerFeeRate, slippageRate };
+    return {
+      makerFeeRate,
+      takerFeeRate,
+      slippageRate,
+      gtDiscountRate,
+      voucherDiscountType: normalizedVoucherType,
+      voucherDiscountValue,
+      minimumFee,
+      roundingDecimals,
+    };
   }
-  return { feeRate, slippageRate };
+  return {
+    feeRate,
+    slippageRate,
+    gtDiscountRate,
+    voucherDiscountType: normalizedVoucherType,
+    voucherDiscountValue,
+    minimumFee,
+    roundingDecimals,
+  };
 }
 
 function resolveOhlcvCachePath(exchange: string, symbol: string, timeframe: string): string {
@@ -223,6 +259,11 @@ program
   .option('--fee-rate <feeRate>', 'Grid fee rate', '0.002')
   .option('--maker-fee-rate <rate>', 'Maker fee rate', '0.001')
   .option('--taker-fee-rate <rate>', 'Taker fee rate', '0.002')
+  .option('--gt-discount-rate <rate>', 'GT discount rate (percent)', '0')
+  .option('--voucher-discount-type <type>', 'Voucher discount type: percent|fixed')
+  .option('--voucher-discount-value <value>', 'Voucher discount value')
+  .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
+  .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
@@ -297,6 +338,11 @@ program
   .option('--fee-rate <feeRate>', 'Grid fee rate', '0.002')
   .option('--maker-fee-rate <rate>', 'Maker fee rate', '0.001')
   .option('--taker-fee-rate <rate>', 'Taker fee rate', '0.002')
+  .option('--gt-discount-rate <rate>', 'GT discount rate (percent)', '0')
+  .option('--voucher-discount-type <type>', 'Voucher discount type: percent|fixed')
+  .option('--voucher-discount-value <value>', 'Voucher discount value')
+  .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
+  .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .action(async (options) => {
     try {
@@ -335,6 +381,11 @@ program
   .option('--fee-rate <feeRate>', 'Grid fee rate', '0.002')
   .option('--maker-fee-rate <rate>', 'Maker fee rate', '0.001')
   .option('--taker-fee-rate <rate>', 'Taker fee rate', '0.002')
+  .option('--gt-discount-rate <rate>', 'GT discount rate (percent)', '0')
+  .option('--voucher-discount-type <type>', 'Voucher discount type: percent|fixed')
+  .option('--voucher-discount-value <value>', 'Voucher discount value')
+  .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
+  .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')

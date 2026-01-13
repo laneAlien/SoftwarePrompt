@@ -1,3 +1,4 @@
+import { calculateFee, FeeModel } from '../core/feeModelGate';
 import { OHLCV } from '../real/ohlcv';
 
 export interface GridResult {
@@ -19,6 +20,11 @@ export interface GridEngineOptions {
   feeRate?: number;
   makerFeeRate?: number;
   takerFeeRate?: number;
+  gtDiscountRate?: number;
+  voucherDiscountType?: 'percent' | 'fixed';
+  voucherDiscountValue?: number;
+  minimumFee?: number;
+  roundingDecimals?: number;
   slippageRate?: number;
   trailStepPercent?: number;
   stopOnMa30?: boolean;
@@ -75,6 +81,26 @@ function resolveExecutionPrice(
   return side === 'buy' ? level * (1 + slippageRate) : level * (1 - slippageRate);
 }
 
+function resolveFeeModel(options: GridEngineOptions): FeeModel {
+  const makerRate = options.makerFeeRate ?? options.feeRate ?? 0.001;
+  const takerRate = options.takerFeeRate ?? options.feeRate ?? 0.002;
+  const gtDiscountRate = options.gtDiscountRate ?? 0;
+  const minimumFee = options.minimumFee ?? 0;
+  const voucherDiscount =
+    options.voucherDiscountType && options.voucherDiscountValue !== undefined
+      ? { type: options.voucherDiscountType, value: options.voucherDiscountValue }
+      : undefined;
+
+  return {
+    makerRate,
+    takerRate,
+    gtDiscountRate,
+    voucherDiscount,
+    minimumFee,
+    roundingDecimals: options.roundingDecimals,
+  };
+}
+
 export function runGridBacktest(options: GridEngineOptions): GridResult {
   const { ohlcv, grids, allocation } = options;
 
@@ -90,16 +116,14 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     };
   }
 
-  const makerFeeRate = options.makerFeeRate ?? options.feeRate ?? 0.001;
-  const takerFeeRate = options.takerFeeRate ?? options.feeRate ?? 0.002;
   const slippageRate = options.slippageRate ?? 0;
   const trailStepPercent = options.trailStepPercent ?? 0;
   const trailStep = trailStepPercent / 100;
   let state = buildGridState(options.low, options.high, grids);
+  const feeModel = resolveFeeModel(options);
 
   const orderValue = allocation / Math.max(1, grids - 1);
 
-  const feeRate = makerFeeRate;
   let pnlGross = 0;
   let pnlNet = 0;
   let maxDD = 0;
@@ -127,18 +151,18 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     const toIndex = resolveGridIndex(toPrice, state, grids);
 
     const isTaker = slippageRate > 0;
-    const feeRate = isTaker ? takerFeeRate : makerFeeRate;
+    const isMaker = !isTaker;
 
     if (toIndex > fromIndex) {
       for (let i = fromIndex + 1; i <= toIndex; i += 1) {
         const levelPrice = resolveGridPrice(state, i);
-        const executionPrice = resolveExecutionPrice(levelPrice, 'sell', isTaker, slippageRate);
         const qty = orderValue / levelPrice;
         if (baseBalance >= qty) {
+          resolveExecutionPrice(levelPrice, 'sell', isTaker, slippageRate);
           baseBalance -= qty;
           quoteBalance += orderValue;
           turnover += orderValue;
-          feesTotal += orderValue * feeRate;
+          feesTotal += calculateFee(orderValue, isMaker, feeModel);
           tradesCount += 1;
         }
       }
@@ -146,11 +170,12 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
       for (let i = fromIndex - 1; i >= toIndex; i -= 1) {
         if (quoteBalance >= orderValue) {
           const levelPrice = resolveGridPrice(state, i);
+          resolveExecutionPrice(levelPrice, 'buy', isTaker, slippageRate);
           const qty = orderValue / levelPrice;
           baseBalance += qty;
           quoteBalance -= orderValue;
           turnover += orderValue;
-          feesTotal += orderValue * feeRate;
+          feesTotal += calculateFee(orderValue, isMaker, feeModel);
           tradesCount += 1;
         }
       }
@@ -215,8 +240,8 @@ export function runGridBacktest(options: GridEngineOptions): GridResult {
     }
   }
 
-  pnlNet = quoteBalance + baseBalance * lastPrice - allocation;
-  pnlGross = pnlNet + feesTotal;
+  pnlGross = quoteBalance + baseBalance * lastPrice - allocation;
+  pnlNet = pnlGross - feesTotal;
 
   return {
     pnlGross,
