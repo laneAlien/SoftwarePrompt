@@ -1,10 +1,12 @@
 import { OHLCV } from '../real/ohlcv';
 import { parseTimeframeToMs } from '../core/utils';
-import { GridResult, runGridBacktest } from './gridEngine';
+import { GridEngineOptions, GridResult, runGridBacktest } from './gridEngine';
 
 export interface TrailingGridOptions {
   sourceTimeframe?: string;
   resampleTo15m?: boolean;
+  stopOnMa30?: boolean;
+  stopOnLowCloses?: number;
 }
 
 function resampleOhlcv(ohlcv: OHLCV[], timeframeMs: number): OHLCV[] {
@@ -48,30 +50,18 @@ function resampleOhlcv(ohlcv: OHLCV[], timeframeMs: number): OHLCV[] {
   return resampled;
 }
 
-export function backtestTrailingGrid(
-  ohlcv: OHLCV[],
-  low: number,
-  high: number,
-  grids: number,
-  allocation: number,
-  trailStepPercent: number,
-  feeRate: number = 0.002,
-  options: TrailingGridOptions = {}
-): GridResult {
-  const normalizedTimeframe = options.sourceTimeframe?.toLowerCase();
-  const shouldResample = options.resampleTo15m ?? normalizedTimeframe === '1m';
-  const ohlcv15m = shouldResample ? resampleOhlcv(ohlcv, parseTimeframeToMs('15m')) : ohlcv;
+export type BacktestTrailingGridParams = GridEngineOptions & TrailingGridOptions;
+
+export function backtestTrailingGrid(params: BacktestTrailingGridParams): GridResult {
+  const normalizedTimeframe = params.sourceTimeframe?.toLowerCase();
+  const shouldResample = params.resampleTo15m ?? normalizedTimeframe === '1m';
+  const ohlcv15m = shouldResample ? resampleOhlcv(params.ohlcv, parseTimeframeToMs('15m')) : params.ohlcv;
 
   return runGridBacktest({
+    ...params,
     ohlcv: ohlcv15m,
-    low,
-    high,
-    grids,
-    allocation,
-    feeRate,
-    trailStepPercent,
-    stopOnMa30: true,
-    stopOnLowCloses: 2,
+    stopOnMa30: params.stopOnMa30 ?? true,
+    stopOnLowCloses: params.stopOnLowCloses ?? 2,
   });
 }
 

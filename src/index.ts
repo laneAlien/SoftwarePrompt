@@ -6,6 +6,7 @@ import { fetchOHLCV } from './real/ohlcv';
 import { detectRegime } from './core/regime';
 import { analyzeLedger, importLedger, LedgerSummary } from './core/importLedger';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
+import { backtestTrailingGrid } from './strategies/trailingGrid';
 
 const program = new Command();
 
@@ -47,6 +48,13 @@ function parseOptionalNumber(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  return undefined;
 }
 
 function formatMetrics(label: string, metrics: OutputMetrics): void {
@@ -330,6 +338,9 @@ program
 
 program
   .command('backtest-grid')
+  .description(
+    'Backtest grid strategy (spot uses static grid range; trailing shifts grid range with price and can stop on MA30/low closes).'
+  )
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
@@ -338,6 +349,7 @@ program
   .option('--limit <limit>', 'Max candles', '1000')
   .option('--rebuild', 'Rebuild cache', false)
   .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
+  .option('--mode <mode>', 'Backtest mode: spot|trailing', 'spot')
   .option('--grid-low <low>', 'Grid low price')
   .option('--grid-high <high>', 'Grid high price')
   .option('--grids <grids>', 'Grid levels', '10')
@@ -352,6 +364,9 @@ program
   .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
   .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
+  .option('--trail-step-percent <percent>', 'Trailing grid step percent')
+  .option('--stop-on-ma30 <enabled>', 'Stop when close drops below MA30 (true|false)')
+  .option('--stop-on-low-closes <count>', 'Stop after N closes below grid low')
   .action(async (options) => {
     try {
       const ohlcv = await resolveOhlcv(options);
@@ -359,16 +374,37 @@ program
         console.log('No OHLCV data available for backtest.');
         return;
       }
+      const mode = (readStringOption(options, 'mode') ?? 'spot').toLowerCase();
+      if (mode !== 'spot' && mode !== 'trailing') {
+        throw new Error(`Unsupported mode "${mode}". Use spot or trailing.`);
+      }
+
       const { low, high, grids, allocation } = resolveGridParams(options, ohlcv);
       const feeOptions = resolveFeeOptions(options);
-      const gridResult = runGridBacktest({
+      const trailStepPercent = parseOptionalNumber(readStringOption(options, 'trailStepPercent'));
+      const stopOnMa30 = parseOptionalBoolean(readStringOption(options, 'stopOnMa30'));
+      const stopOnLowCloses = parseOptionalNumber(readStringOption(options, 'stopOnLowCloses'));
+      const commonOptions = {
         ohlcv,
         low,
         high,
         grids,
         allocation,
         ...feeOptions,
-      });
+        trailStepPercent,
+        stopOnMa30,
+        stopOnLowCloses,
+      };
+      const gridResult =
+        mode === 'trailing'
+          ? backtestTrailingGrid({
+              ...commonOptions,
+              sourceTimeframe: readStringOption(options, 'timeframe'),
+              trailStepPercent: trailStepPercent ?? 0,
+              stopOnMa30,
+              stopOnLowCloses,
+            })
+          : runGridBacktest(commonOptions);
       formatMetrics('Grid backtest metrics', buildGridMetrics(gridResult));
     } catch (error) {
       console.error('Error running grid backtest:', error);
