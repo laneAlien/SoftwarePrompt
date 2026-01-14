@@ -93,6 +93,7 @@ npm start analyze-pair -- --exchange kucoin --symbol TON/USDT --timeframe 15m --
 
 Requires exchange API keys configured in `.env`.
 - `--since YYYY-MM-DD` or `--months N` fetch multi-month OHLCV via paginated requests; `--no-cache` bypasses cached candles.
+- OHLCV loading defaults to `--ohlcv-source auto` (cache + fetch missing), and CCXT rate limiting is enabled by default (override with `--no-rate-limit`).
 - Indicators now include OBV/VWAP/funding rate and are shown in the console output.
 
 ### 4. Analyze Portfolio
