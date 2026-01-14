@@ -18,6 +18,19 @@ export interface ResolveOhlcvParams {
   fillGaps?: boolean;
   rateLimit?: boolean;
   verbose?: boolean;
+  log?: (msg: string) => void;
+}
+
+export interface ResolveOhlcvStats {
+  cacheLoadedCount: number;
+  fetchedCount: number;
+  dedupDroppedCount: number;
+  gapsDetectedCount: number;
+  gapsFilledCount: number;
+  wroteCache: boolean;
+  cachePath: string;
+  cacheCoverageStart?: number;
+  cacheCoverageEnd?: number;
 }
 
 const DEFAULT_LIMIT = 1000;
@@ -64,11 +77,20 @@ function mapToCandle(row: RawOHLCV): OHLCV {
   };
 }
 
-function mergeCandles(existing: OHLCV[], incoming: OHLCV[]): OHLCV[] {
+function mergeCandlesWithStats(
+  existing: OHLCV[],
+  incoming: OHLCV[]
+): { merged: OHLCV[]; dedupDroppedCount: number } {
   const map = new Map<number, OHLCV>();
   existing.forEach((candle) => map.set(candle.timestamp, candle));
-  incoming.forEach((candle) => map.set(candle.timestamp, candle));
-  return sortByTimestamp(Array.from(map.values()));
+  let dedupDroppedCount = 0;
+  incoming.forEach((candle) => {
+    if (map.has(candle.timestamp)) {
+      dedupDroppedCount += 1;
+    }
+    map.set(candle.timestamp, candle);
+  });
+  return { merged: sortByTimestamp(Array.from(map.values())), dedupDroppedCount };
 }
 
 function filterRange(candles: OHLCV[], since?: number, until?: number): OHLCV[] {
@@ -121,7 +143,11 @@ async function fetchRange(
   since: number,
   until: number,
   limit: number,
-  verbose?: boolean
+  options?: {
+    verbose?: boolean;
+    log?: (msg: string) => void;
+    onBatch?: (info: { since: number; count: number; lastTimestamp?: number }) => void;
+  }
 ): Promise<OHLCV[]> {
   const intervalMs = exchange.parseTimeframe(timeframe) * 1000;
   if (!intervalMs || Number.isNaN(intervalMs)) {
@@ -135,7 +161,7 @@ async function fetchRange(
       () => exchange.fetchOHLCV(symbol, timeframe, fetchSince, limit),
       {
         onRetry: (attempt, error) => {
-          if (verbose) {
+          if (options?.verbose) {
             console.warn(`fetchOHLCV retry ${attempt}/3:`, (error as Error).message || error);
           }
         },
@@ -143,8 +169,14 @@ async function fetchRange(
     );
     if (!batch.length) break;
     batch.forEach((row) => all.push(mapToCandle(row)));
+    const lastTimestamp = batch[batch.length - 1]?.[0];
+    options?.onBatch?.({ since: fetchSince, count: batch.length, lastTimestamp });
+    if (options?.verbose && options.log) {
+      options.log(
+        `[OHLCV] fetch batch since=${new Date(fetchSince).toISOString()} count=${batch.length}`
+      );
+    }
     if (batch.length < 2) break;
-    const lastTimestamp = batch[batch.length - 1][0];
     if (!lastTimestamp || lastTimestamp <= fetchSince) break;
     if (lastTimestamp >= until) break;
     fetchSince = lastTimestamp + intervalMs;
@@ -158,18 +190,21 @@ async function fetchLatest(
   symbol: string,
   timeframe: string,
   limit: number,
-  verbose?: boolean
+  options?: { verbose?: boolean; log?: (msg: string) => void }
 ): Promise<OHLCV[]> {
   const batch = await withRetry(
     () => exchange.fetchOHLCV(symbol, timeframe, undefined, limit),
     {
       onRetry: (attempt, error) => {
-        if (verbose) {
+        if (options?.verbose) {
           console.warn(`fetchOHLCV retry ${attempt}/3:`, (error as Error).message || error);
         }
       },
     }
   );
+  if (options?.verbose && options.log) {
+    options.log(`[OHLCV] fetch latest count=${batch.length}`);
+  }
   return batch.map((row) => mapToCandle(row));
 }
 
@@ -253,7 +288,30 @@ function resolveExchange(exchangeInput: Exchange | string, rateLimit?: boolean):
   );
 }
 
-export async function resolveOhlcv(params: ResolveOhlcvParams): Promise<OHLCV[]> {
+function formatCoverage(start?: number, end?: number): string {
+  if (!start || !end) return 'n/a';
+  return `${new Date(start).toISOString()}..${new Date(end).toISOString()}`;
+}
+
+function buildMissingSummary(
+  gaps: Array<{ start: number; end: number }>,
+  requestedStart: number,
+  requestedEnd: number
+): string {
+  if (!gaps.length) return 'none';
+  const parts: string[] = [];
+  const hasHead = gaps.some((gap) => gap.start === requestedStart);
+  const hasTail = gaps.some((gap) => gap.end === requestedEnd);
+  const internalCount = gaps.filter((gap) => gap.start !== requestedStart && gap.end !== requestedEnd).length;
+  if (hasHead) parts.push('head');
+  if (hasTail) parts.push('tail');
+  if (internalCount > 0) parts.push(`gaps=${internalCount}`);
+  return parts.join(' ');
+}
+
+export async function resolveOhlcvWithStats(
+  params: ResolveOhlcvParams
+): Promise<{ candles: OHLCV[]; stats: ResolveOhlcvStats }> {
   const {
     symbol,
     timeframe,
@@ -262,7 +320,13 @@ export async function resolveOhlcv(params: ResolveOhlcvParams): Promise<OHLCV[]>
     fillGaps = false,
     limit = DEFAULT_LIMIT,
     verbose,
+    log,
   } = params;
+  const logFn = log ?? console.log;
+  const logInfo = (message: string): void => {
+    if (!logFn) return;
+    logFn(`[OHLCV] ${message}`);
+  };
   const exchange = resolveExchange(params.exchange, params.rateLimit);
   const exchangeId = exchange.id;
   const intervalMs = exchange.parseTimeframe(timeframe) * 1000;
@@ -275,74 +339,176 @@ export async function resolveOhlcv(params: ResolveOhlcvParams): Promise<OHLCV[]>
   const untilTimestamp = parseTimestamp(params.until) ?? (sinceTimestamp !== undefined ? Date.now() : undefined);
 
   const existing = rebuildCache ? [] : parseJsonl(cachePath);
+  const existingSorted = sortByTimestamp([...existing]);
+  const stats: ResolveOhlcvStats = {
+    cacheLoadedCount: 0,
+    fetchedCount: 0,
+    dedupDroppedCount: 0,
+    gapsDetectedCount: 0,
+    gapsFilledCount: 0,
+    wroteCache: false,
+    cachePath,
+    cacheCoverageStart: existingSorted[0]?.timestamp,
+    cacheCoverageEnd: existingSorted[existingSorted.length - 1]?.timestamp,
+  };
+
+  if (source === 'auto') {
+    logInfo(`source=auto exchange=${exchangeId} symbol=${symbol} tf=${timeframe}`);
+  }
 
   if (source === 'cache') {
     const filtered = sortByTimestamp(filterRange(existing, sinceTimestamp, untilTimestamp));
+    stats.cacheLoadedCount = filtered.length;
     ensureCacheCoverage(filtered, sinceTimestamp, untilTimestamp, intervalMs);
-    return applyLimit(filtered, limit);
+    return { candles: applyLimit(filtered, limit), stats };
   }
 
   if (source === 'exchange') {
     const fetched =
       sinceTimestamp === undefined
-        ? await fetchLatest(exchange, symbol, timeframe, limit, verbose)
-        : await fetchRange(exchange, symbol, timeframe, sinceTimestamp, untilTimestamp ?? Date.now(), limit, verbose);
-    const merged = rebuildCache ? fetched : mergeCandles(existing, fetched);
-    if (merged.length) {
-      writeJsonl(cachePath, merged);
+        ? await fetchLatest(exchange, symbol, timeframe, limit, { verbose, log: logFn })
+        : await fetchRange(exchange, symbol, timeframe, sinceTimestamp, untilTimestamp ?? Date.now(), limit, {
+            verbose,
+            log: logFn,
+          });
+    stats.fetchedCount = fetched.length;
+    const mergeResult = rebuildCache
+      ? { merged: fetched, dedupDroppedCount: 0 }
+      : mergeCandlesWithStats(existing, fetched);
+    stats.dedupDroppedCount = mergeResult.dedupDroppedCount;
+    if (mergeResult.merged.length) {
+      writeJsonl(cachePath, mergeResult.merged);
+      stats.wroteCache = true;
     }
-    const filtered = sortByTimestamp(filterRange(merged, sinceTimestamp, untilTimestamp));
-    return applyLimit(filtered, limit);
+    const filtered = sortByTimestamp(filterRange(mergeResult.merged, sinceTimestamp, untilTimestamp));
+    return { candles: applyLimit(filtered, limit), stats };
   }
 
   if (rebuildCache) {
     const fetched =
       sinceTimestamp === undefined
-        ? await fetchLatest(exchange, symbol, timeframe, limit, verbose)
-        : await fetchRange(exchange, symbol, timeframe, sinceTimestamp, untilTimestamp ?? Date.now(), limit, verbose);
+        ? await fetchLatest(exchange, symbol, timeframe, limit, { verbose, log: logFn })
+        : await fetchRange(exchange, symbol, timeframe, sinceTimestamp, untilTimestamp ?? Date.now(), limit, {
+            verbose,
+            log: logFn,
+          });
+    stats.fetchedCount = fetched.length;
     if (fetched.length) {
       writeJsonl(cachePath, fetched);
+      stats.wroteCache = true;
     }
     const filtered = sortByTimestamp(filterRange(fetched, sinceTimestamp, untilTimestamp));
-    return applyLimit(filtered, limit);
+    return { candles: applyLimit(filtered, limit), stats };
   }
 
   if (sinceTimestamp === undefined) {
     const cachedSorted = sortByTimestamp([...existing]);
     if (cachedSorted.length >= limit) {
-      return cachedSorted.slice(-limit);
+      stats.cacheLoadedCount = cachedSorted.length;
+      if (source === 'auto') {
+        logInfo(`cache=${cachePath} loaded=${stats.cacheLoadedCount} range=${formatCoverage(
+          stats.cacheCoverageStart,
+          stats.cacheCoverageEnd
+        )}`);
+        logInfo('missing: none fetched=0');
+        logInfo(`merge: total=${cachedSorted.length} dedup=0 gapsFilled=0 wroteCache=false`);
+      }
+      return { candles: cachedSorted.slice(-limit), stats };
     }
-    const fetched = await fetchLatest(exchange, symbol, timeframe, limit, verbose);
-    const merged = mergeCandles(existing, fetched);
-    if (merged.length) {
-      writeJsonl(cachePath, merged);
+    const fetched = await fetchLatest(exchange, symbol, timeframe, limit, { verbose, log: logFn });
+    stats.fetchedCount = fetched.length;
+    const mergeResult = mergeCandlesWithStats(existing, fetched);
+    stats.dedupDroppedCount = mergeResult.dedupDroppedCount;
+    if (mergeResult.merged.length) {
+      writeJsonl(cachePath, mergeResult.merged);
+      stats.wroteCache = true;
     }
-    return applyLimit(sortByTimestamp(filterRange(merged, sinceTimestamp, untilTimestamp)), limit);
+    if (source === 'auto') {
+      stats.cacheLoadedCount = cachedSorted.length;
+      logInfo(
+        `cache=${cachePath} loaded=${stats.cacheLoadedCount} range=${formatCoverage(
+          stats.cacheCoverageStart,
+          stats.cacheCoverageEnd
+        )}`
+      );
+      logInfo(`missing: tail fetched=${stats.fetchedCount}`);
+      logInfo(
+        `merge: total=${mergeResult.merged.length} dedup=${stats.dedupDroppedCount} gapsFilled=${stats.gapsFilledCount} wroteCache=${stats.wroteCache}`
+      );
+    }
+    return { candles: applyLimit(sortByTimestamp(filterRange(mergeResult.merged, sinceTimestamp, untilTimestamp)), limit), stats };
   }
 
   const requestedEnd = untilTimestamp ?? Date.now();
   const cachedRange = sortByTimestamp(filterRange(existing, sinceTimestamp, requestedEnd));
   const gaps = findGaps(cachedRange, sinceTimestamp, requestedEnd, intervalMs);
+  stats.cacheLoadedCount = cachedRange.length;
+  stats.gapsDetectedCount = gaps.length;
+  if (source === 'auto') {
+    logInfo(
+      `cache=${cachePath} loaded=${stats.cacheLoadedCount} range=${formatCoverage(
+        stats.cacheCoverageStart,
+        stats.cacheCoverageEnd
+      )}`
+    );
+  }
   if (gaps.length === 0) {
-    return applyLimit(cachedRange, limit);
+    if (source === 'auto') {
+      logInfo('missing: none fetched=0');
+      logInfo(
+        `merge: total=${cachedRange.length} dedup=0 gapsFilled=0 wroteCache=false`
+      );
+    }
+    return { candles: applyLimit(cachedRange, limit), stats };
   }
   const missingRanges = resolveMissingRanges(cachedRange, sinceTimestamp, requestedEnd, intervalMs, fillGaps);
   let fetched: OHLCV[] = [];
+  let batchCount = 0;
 
   for (const range of missingRanges) {
-    if (verbose) {
-      console.log(`Fetching ${symbol} ${timeframe} ${range.start}..${range.end}`);
+    if (verbose && logFn) {
+      logFn(
+        `[OHLCV] fetch segment since=${new Date(range.start).toISOString()} until=${new Date(range.end).toISOString()}`
+      );
     }
-    const rangeCandles = await fetchRange(exchange, symbol, timeframe, range.start, range.end, limit, verbose);
+    const rangeCandles = await fetchRange(exchange, symbol, timeframe, range.start, range.end, limit, {
+      verbose,
+      log: logFn,
+      onBatch: () => {
+        batchCount += 1;
+      },
+    });
     fetched = fetched.concat(rangeCandles);
   }
 
-  const merged = mergeCandles(existing, fetched);
+  stats.fetchedCount = fetched.length;
+  const mergeResult = mergeCandlesWithStats(existing, fetched);
+  stats.dedupDroppedCount = mergeResult.dedupDroppedCount;
+  if (fillGaps) {
+    const remaining = findGaps(
+      sortByTimestamp(filterRange(mergeResult.merged, sinceTimestamp, requestedEnd)),
+      sinceTimestamp,
+      requestedEnd,
+      intervalMs
+    );
+    stats.gapsFilledCount = Math.max(stats.gapsDetectedCount - remaining.length, 0);
+  }
+  const merged = mergeResult.merged;
   if (merged.length) {
     writeJsonl(cachePath, merged);
+    stats.wroteCache = true;
   }
   const filtered = sortByTimestamp(filterRange(merged, sinceTimestamp, requestedEnd));
   const remainingGaps = findGaps(filtered, sinceTimestamp, requestedEnd, intervalMs);
+  if (source === 'auto') {
+    logInfo(`missing: ${buildMissingSummary(gaps, sinceTimestamp, requestedEnd)} fetched=${stats.fetchedCount}`);
+    logInfo(
+      `merge: total=${filtered.length} dedup=${stats.dedupDroppedCount} gapsFilled=${stats.gapsFilledCount} wroteCache=${stats.wroteCache}`
+    );
+    if (verbose && logFn) {
+      logFn(`[OHLCV] fetch batches=${batchCount}`);
+    }
+  }
   if (!fillGaps) {
     const internalGaps = resolveInternalGaps(filtered, sinceTimestamp, requestedEnd, intervalMs);
     if (internalGaps.length > 0) {
@@ -357,5 +523,10 @@ export async function resolveOhlcv(params: ResolveOhlcvParams): Promise<OHLCV[]>
         .join(', ')}`
     );
   }
-  return applyLimit(filtered, limit);
+  return { candles: applyLimit(filtered, limit), stats };
+}
+
+export async function resolveOhlcv(params: ResolveOhlcvParams): Promise<OHLCV[]> {
+  const result = await resolveOhlcvWithStats(params);
+  return result.candles;
 }

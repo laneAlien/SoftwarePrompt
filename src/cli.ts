@@ -262,6 +262,13 @@ function resolveRateLimit(options: Record<string, unknown>): boolean {
   return resolved ?? true;
 }
 
+function resolveOhlcvLogOptions(options: Record<string, unknown>): { verbose: boolean; log: (msg: string) => void } {
+  const quiet = readBooleanOption(options, 'quiet') ?? false;
+  const verbose = readBooleanOption(options, 'verbose') ?? false;
+  const log = quiet ? () => {} : console.log;
+  return { verbose: !quiet && verbose, log };
+}
+
 function createCcxtExchange(exchangeId: string, options: Record<string, unknown>): Exchange {
   const ExchangeCtor = (ccxt as any)[exchangeId];
   if (!ExchangeCtor) {
@@ -761,6 +768,7 @@ async function resolveGtFeeQuoteResolver(
     rebuildCache: readBooleanOption(options, 'rebuildCache'),
     fillGaps: readBooleanOption(options, 'fillGaps'),
     rateLimit: resolveRateLimit(options),
+    ...resolveOhlcvLogOptions(options),
   });
   if (!gtOhlcv.length) {
     return { ohlcvCount: 0 };
@@ -1022,6 +1030,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
     );
     const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
     const decisionTimeframe = '15m';
+    const ohlcvLogOptions = resolveOhlcvLogOptions(options);
     const ohlcv = await resolveOhlcv({
       exchange,
       symbol,
@@ -1033,6 +1042,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
       rebuildCache: readBooleanOption(options, 'rebuildCache'),
       fillGaps: readBooleanOption(options, 'fillGaps'),
       rateLimit: resolveRateLimit(options),
+      ...ohlcvLogOptions,
     });
     if (!ohlcv.length) {
       renderReportWithSave(
@@ -1198,6 +1208,7 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
     );
     const mode = resolveConfigString(options, 'mode', ['--mode'], outputDefaults.mode, 'spot').toLowerCase();
     const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
+    const ohlcvLogOptions = resolveOhlcvLogOptions(options);
     const ohlcv = await resolveOhlcv({
       exchange,
       symbol,
@@ -1209,6 +1220,7 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       rebuildCache: readBooleanOption(options, 'rebuildCache'),
       fillGaps: readBooleanOption(options, 'fillGaps'),
       rateLimit: resolveRateLimit(options),
+      ...ohlcvLogOptions,
     });
     if (!ohlcv.length) {
       renderReportWithSave(
@@ -1492,6 +1504,8 @@ Examples:
   .option('--rebuild', 'Rebuild cache (deprecated)', false)
   .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
   .option('--no-rate-limit', 'Disable CCXT rate limiting')
+  .option('--verbose', 'Enable verbose OHLCV logging')
+  .option('--quiet', 'Suppress OHLCV logs')
   .addHelpText(
     'after',
     `
@@ -1515,6 +1529,7 @@ Examples:
         rebuildCache,
         fillGaps: Boolean(options.fillGaps),
         rateLimit: resolveRateLimit(options),
+        ...resolveOhlcvLogOptions(options),
       });
       console.log(`Fetched ${data.length} candles.`);
     } catch (error) {
@@ -1536,6 +1551,8 @@ program
   .option('--rebuild-cache', 'Rebuild cache', false)
   .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
   .option('--no-rate-limit', 'Disable CCXT rate limiting')
+  .option('--verbose', 'Enable verbose OHLCV logging')
+  .option('--quiet', 'Suppress OHLCV logs')
   .option('--plot <type>', 'Plot type: ascii')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
@@ -1562,6 +1579,7 @@ Examples:
       rebuildCache: Boolean(options.rebuildCache),
       fillGaps: Boolean(options.fillGaps),
       rateLimit: resolveRateLimit(options),
+      ...resolveOhlcvLogOptions(options),
     });
     if (!ohlcv.length) {
       renderReportWithSave(
@@ -1635,6 +1653,8 @@ Examples:
   .option('--rebuild-cache', 'Rebuild cache', false)
   .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
   .option('--no-rate-limit', 'Disable CCXT rate limiting')
+  .option('--verbose', 'Enable verbose OHLCV logging')
+  .option('--quiet', 'Suppress OHLCV logs')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .option('--no-llm', 'Disable LLM analysis output')
@@ -1669,6 +1689,7 @@ Examples:
         source: ohlcvSource,
         rebuildCache: Boolean(options.rebuildCache || options.noCache),
         fillGaps: Boolean(options.fillGaps),
+        ...resolveOhlcvLogOptions(options),
       });
       const candles = candlesRaw.map((candle) => ({
         ...candle,
@@ -2084,6 +2105,8 @@ program
   .option('--rebuild-cache', 'Rebuild cache', false)
   .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
   .option('--no-rate-limit', 'Disable CCXT rate limiting')
+  .option('--verbose', 'Enable verbose OHLCV logging')
+  .option('--quiet', 'Suppress OHLCV logs')
   .option('--fee-model <model>', 'Fee model: flat|maker-taker', 'flat')
   .option('--fee-rate <feeRate>', 'Grid fee rate', '0.002')
   .option('--maker-fee-rate <rate>', 'Maker fee rate', '0.001')
@@ -2118,6 +2141,8 @@ program
   .option('--rebuild-cache', 'Rebuild cache', false)
   .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
   .option('--no-rate-limit', 'Disable CCXT rate limiting')
+  .option('--verbose', 'Enable verbose OHLCV logging')
+  .option('--quiet', 'Suppress OHLCV logs')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .option('--output <format>', 'Output format: text|json|md', 'text')
@@ -2203,6 +2228,8 @@ program
   .option('--rebuild-cache', 'Rebuild cache', false)
   .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
   .option('--no-rate-limit', 'Disable CCXT rate limiting')
+  .option('--verbose', 'Enable verbose OHLCV logging')
+  .option('--quiet', 'Suppress OHLCV logs')
   .option('--mode <mode>', 'Backtest mode: spot|trailing', 'spot')
   .option('--low <low>', 'Grid low price (number|auto)')
   .option('--high <high>', 'Grid high price (number|auto)')
@@ -2269,6 +2296,8 @@ program
   .option('--rebuild-cache', 'Rebuild cache', false)
   .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
   .option('--no-rate-limit', 'Disable CCXT rate limiting')
+  .option('--verbose', 'Enable verbose OHLCV logging')
+  .option('--quiet', 'Suppress OHLCV logs')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .option('--plot <type>', 'Plot type: png (saved to reports/)')
@@ -2367,6 +2396,7 @@ Examples:
         rebuildCache: readBooleanOption(options, 'rebuildCache'),
         fillGaps: readBooleanOption(options, 'fillGaps'),
         rateLimit: resolveRateLimit(options),
+        ...resolveOhlcvLogOptions(options),
       });
       if (!ohlcv.length) {
         renderReportWithSave(

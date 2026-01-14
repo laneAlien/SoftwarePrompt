@@ -118,6 +118,8 @@ npm start analyze-news -- --symbol TON
 npm start -- analyze-regime --exchange gate --symbol RAVE/USDT --since 2024-01-01 --ohlcv-source auto
 ```
 
+Auto mode reads cached OHLCV first and fetches any missing segments; add `--verbose` to see detailed cache/fetch logs (or `--quiet` to suppress them).
+
 * бэктест grid
 
 ```bash
