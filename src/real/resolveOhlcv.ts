@@ -411,7 +411,9 @@ export async function resolveOhlcvWithStats(
           stats.cacheCoverageEnd
         )}`);
         logInfo('missing: none fetched=0');
-        logInfo(`merge: total=${cachedSorted.length} dedup=0 gapsFilled=0 wroteCache=false`);
+        logInfo(
+          `merge: total=${cachedSorted.length} dedup=0 gapsDetected=${stats.gapsDetectedCount} gapsFilled=0 wroteCache=false`
+        );
       }
       return { candles: cachedSorted.slice(-limit), stats };
     }
@@ -433,7 +435,7 @@ export async function resolveOhlcvWithStats(
       );
       logInfo(`missing: tail fetched=${stats.fetchedCount}`);
       logInfo(
-        `merge: total=${mergeResult.merged.length} dedup=${stats.dedupDroppedCount} gapsFilled=${stats.gapsFilledCount} wroteCache=${stats.wroteCache}`
+        `merge: total=${mergeResult.merged.length} dedup=${stats.dedupDroppedCount} gapsDetected=${stats.gapsDetectedCount} gapsFilled=${stats.gapsFilledCount} wroteCache=${stats.wroteCache}`
       );
     }
     return { candles: applyLimit(sortByTimestamp(filterRange(mergeResult.merged, sinceTimestamp, untilTimestamp)), limit), stats };
@@ -456,7 +458,7 @@ export async function resolveOhlcvWithStats(
     if (source === 'auto') {
       logInfo('missing: none fetched=0');
       logInfo(
-        `merge: total=${cachedRange.length} dedup=0 gapsFilled=0 wroteCache=false`
+        `merge: total=${cachedRange.length} dedup=0 gapsDetected=${stats.gapsDetectedCount} gapsFilled=0 wroteCache=false`
       );
     }
     return { candles: applyLimit(cachedRange, limit), stats };
@@ -503,7 +505,7 @@ export async function resolveOhlcvWithStats(
   if (source === 'auto') {
     logInfo(`missing: ${buildMissingSummary(gaps, sinceTimestamp, requestedEnd)} fetched=${stats.fetchedCount}`);
     logInfo(
-      `merge: total=${filtered.length} dedup=${stats.dedupDroppedCount} gapsFilled=${stats.gapsFilledCount} wroteCache=${stats.wroteCache}`
+      `merge: total=${filtered.length} dedup=${stats.dedupDroppedCount} gapsDetected=${stats.gapsDetectedCount} gapsFilled=${stats.gapsFilledCount} wroteCache=${stats.wroteCache}`
     );
     if (verbose && logFn) {
       logFn(`[OHLCV] fetch batches=${batchCount}`);
