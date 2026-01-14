@@ -28,8 +28,15 @@ export class OpenAILlmClient implements LlmClient {
       apiKey: selectedKey,
       baseURL,
     });
-    this.model =
-      model || (useDeepseek ? process.env.DEEPSEEK_MODEL || 'deepseek-chat' : process.env.LLM_MODEL || 'gpt-3.5-turbo');
+    if (useDeepseek) {
+      this.model = model || process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+    } else {
+      const resolvedModel = model || process.env.LLM_MODEL;
+      if (!resolvedModel) {
+        throw new Error('OpenAI model is not set. Define LLM_MODEL or use --no-llm.');
+      }
+      this.model = resolvedModel;
+    }
   }
 
   async analyze(input: LlmAnalysisInput, mode: LlmMode): Promise<LlmAnalysisOutput> {

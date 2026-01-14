@@ -11,12 +11,13 @@ export class KucoinClient implements ExchangeClient {
   private static marketsLoaded = false;
   private candleCache = new Map<string, Candle[]>();
 
-  constructor(apiKey?: string, apiSecret?: string, passphrase?: string) {
+  constructor(apiKey?: string, apiSecret?: string, passphrase?: string, options: { enableRateLimit?: boolean } = {}) {
     this.exchange = new ccxt.kucoin(
       createExchangeOptions({
         apiKey: apiKey || process.env.KUCOIN_API_KEY,
         secret: apiSecret || process.env.KUCOIN_API_SECRET,
         password: passphrase || process.env.KUCOIN_API_PASSPHRASE,
+        enableRateLimit: options.enableRateLimit,
       })
     );
   }

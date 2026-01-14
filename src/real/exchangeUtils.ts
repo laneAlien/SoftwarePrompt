@@ -20,6 +20,13 @@ export function isRetryableError(error: unknown): boolean {
   return retryKeywords.some((keyword) => message.includes(keyword));
 }
 
+export function isRateLimitError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as { name?: string; message?: string };
+  const message = `${err.name ?? ''} ${err.message ?? ''}`.toLowerCase();
+  return message.includes('rate limit') || message.includes('too many requests') || message.includes('429');
+}
+
 export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const { retries = 3, delayMs = 750, onRetry } = options;
   let attempt = 0;
@@ -30,13 +37,16 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     } catch (error) {
       attempt++;
       const retryable = isRetryableError(error);
+      const rateLimited = isRateLimitError(error);
+      const maxRetries = rateLimited ? Math.min(retries, 1) : retries;
 
-      if (!retryable || attempt > retries) {
+      if (!retryable || attempt > maxRetries) {
         throw error;
       }
 
       onRetry?.(attempt, error);
-      await delay(delayMs * attempt);
+      const delayMultiplier = rateLimited ? 2 : 1;
+      await delay(delayMs * attempt * delayMultiplier);
     }
   }
 }
@@ -44,7 +54,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
 export function createExchangeOptions(overrides?: Partial<Exchange>) {
   return {
     timeout: 30000,
-    enableRateLimit: false,
+    enableRateLimit: true,
     ...overrides,
   } as any;
 }
