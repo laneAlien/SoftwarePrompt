@@ -143,6 +143,7 @@ async function fetchRange(
     );
     if (!batch.length) break;
     batch.forEach((row) => all.push(mapToCandle(row)));
+    if (batch.length < 2) break;
     const lastTimestamp = batch[batch.length - 1][0];
     if (!lastTimestamp || lastTimestamp <= fetchSince) break;
     if (lastTimestamp >= until) break;
@@ -197,6 +198,16 @@ function resolveMissingRanges(
     ranges.push({ start: last.timestamp + intervalMs, end });
   }
   return ranges.filter((range) => range.start <= range.end);
+}
+
+function resolveInternalGaps(
+  cached: OHLCV[],
+  start: number,
+  end: number,
+  intervalMs: number
+): Array<{ start: number; end: number }> {
+  const gaps = findGaps(cached, start, end, intervalMs);
+  return gaps.filter((gap) => gap.start !== start && gap.end !== end);
 }
 
 function ensureCacheCoverage(
@@ -311,6 +322,10 @@ export async function resolveOhlcv(params: ResolveOhlcvParams): Promise<OHLCV[]>
 
   const requestedEnd = untilTimestamp ?? Date.now();
   const cachedRange = sortByTimestamp(filterRange(existing, sinceTimestamp, requestedEnd));
+  const gaps = findGaps(cachedRange, sinceTimestamp, requestedEnd, intervalMs);
+  if (gaps.length === 0) {
+    return applyLimit(cachedRange, limit);
+  }
   const missingRanges = resolveMissingRanges(cachedRange, sinceTimestamp, requestedEnd, intervalMs, fillGaps);
   let fetched: OHLCV[] = [];
 
@@ -327,13 +342,20 @@ export async function resolveOhlcv(params: ResolveOhlcvParams): Promise<OHLCV[]>
     writeJsonl(cachePath, merged);
   }
   const filtered = sortByTimestamp(filterRange(merged, sinceTimestamp, requestedEnd));
-  if (fillGaps) {
-    const gaps = findGaps(filtered, sinceTimestamp, requestedEnd, intervalMs);
-    if (gaps.length > 0) {
+  const remainingGaps = findGaps(filtered, sinceTimestamp, requestedEnd, intervalMs);
+  if (!fillGaps) {
+    const internalGaps = resolveInternalGaps(filtered, sinceTimestamp, requestedEnd, intervalMs);
+    if (internalGaps.length > 0) {
       throw new Error(
-        `Missing OHLCV intervals for ${symbol} ${timeframe}: ${gaps.map((gap) => `${gap.start}..${gap.end}`).join(', ')}`
+        `Cache has internal gaps for ${symbol} ${timeframe}. Use --fill-gaps to fetch missing intervals.`
       );
     }
+  } else if (remainingGaps.length > 0) {
+    throw new Error(
+      `Missing OHLCV intervals for ${symbol} ${timeframe}: ${remainingGaps
+        .map((gap) => `${gap.start}..${gap.end}`)
+        .join(', ')}`
+    );
   }
   return applyLimit(filtered, limit);
 }
