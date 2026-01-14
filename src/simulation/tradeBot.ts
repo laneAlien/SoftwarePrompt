@@ -2,11 +2,12 @@ import { MarketSimulator } from './marketSimulator';
 import { OrderExecutionEngine } from './orderExecution';
 import { SimulationReport, buildSimulationReport } from './reporter';
 import { computeIndicators } from '../indicators';
-import { runAllStrategies, combineSignals } from '../strategies';
-import { RiskLevel, StrategyContext, CombinedSignal } from '../core/types';
+import { detectRegime, MarketRegime } from '../core/regime';
+import { Candle, IndicatorSet, RiskLevel } from '../core/types';
 import { ReportSummary } from '../reports/reportParser';
 import { determineRiskLevel } from '../real/liquidationRisk';
 import { adjustAggressiveness, calculateMaxDrawdown, estimateVolatility } from '../real/riskManagement';
+import { generateSignal, SignalResult } from '../strategies/signals';
 
 export interface TradeBotConfig {
   symbol: string;
@@ -16,14 +17,23 @@ export interface TradeBotConfig {
   mmr: number;
   historyWindow: number;
   aggressiveness: number;
+  strategy: 'trend' | 'mean' | 'auto';
+  minConfidence: number;
+  cooldownBars: number;
+  logNoTrade: boolean;
   reportSummary?: ReportSummary;
 }
 
-export interface SimulationTradeDecision {
+interface RiskValidationResult {
+  ok: boolean;
+  rejectReason?: string;
+}
+
+interface ExecutionResult {
   action: 'open-long' | 'open-short' | 'close' | 'hold';
-  sizeFraction?: number;
-  leverage?: number;
   reason: string;
+  feePaid?: number;
+  pnl?: number;
 }
 
 export class TradeBot {
@@ -33,9 +43,16 @@ export class TradeBot {
   private log: string[] = [];
   private tradesCount = 0;
   private liquidationsCount = 0;
+  private closedTrades = 0;
+  private winningTrades = 0;
   private maxDrawdownPercent = 0;
   private peakBalance: number;
   private dynamicAggressiveness: number;
+  private lastTradeStep: number | null = null;
+  private totalFeesPaid = 0;
+  private noTradeReasons = new Map<string, number>();
+  private lastNoTradeReason = '';
+  private noTradeLogEvery = 25;
 
   constructor(config: TradeBotConfig, simulator: MarketSimulator, execution: OrderExecutionEngine) {
     this.config = config;
@@ -59,19 +76,8 @@ export class TradeBot {
       this.execution.onPriceUpdate(marketState.currentPrice);
 
       const indicators = computeIndicators(marketState.recentCandles);
-
-      const strategyContext: StrategyContext = {
-        symbol: marketState.symbol,
-        timeframe: marketState.timeframe,
-        candles: marketState.recentCandles,
-        indicators,
-        currentPrice: marketState.currentPrice,
-        position: null,
-        reportSummary: this.config.reportSummary,
-      };
-
-      const signals = runAllStrategies(strategyContext);
-      const combinedSignal = combineSignals(signals);
+      const regime = detectRegime(marketState.recentCandles).regime;
+      const signal = this.generateSignal(marketState.recentCandles, indicators, regime);
 
       const metrics = {
         maxDrawdownPercent: calculateMaxDrawdown(marketState.recentCandles),
@@ -85,9 +91,17 @@ export class TradeBot {
 
       const riskSnapshot = this.assessRisk(marketState.currentPrice);
 
-      const decision = this.makeDecision(combinedSignal, riskSnapshot.riskLevel);
-
-      await this.executeDecision(decision, marketState.currentPrice, stepCount);
+      const validation = this.validateSignal(signal, riskSnapshot.riskLevel, stepCount);
+      if (!validation.ok) {
+        this.recordNoTrade(validation.rejectReason ?? 'Signal rejected', stepCount);
+      } else {
+        const execution = this.applySignal(signal, marketState.currentPrice, stepCount, riskSnapshot.riskLevel);
+        if (execution.action === 'hold') {
+          this.recordNoTrade(execution.reason, stepCount);
+        } else if (execution.feePaid) {
+          this.totalFeesPaid += execution.feePaid;
+        }
+      }
 
       this.updateMetrics(marketState.currentPrice);
 
@@ -102,12 +116,21 @@ export class TradeBot {
     this.log.push('');
     this.log.push('Simulation completed.');
 
+    const winRatePercent = this.closedTrades > 0 ? (this.winningTrades / this.closedTrades) * 100 : 0;
+    const topNoTradeReasons = [...this.noTradeReasons.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([reason, count]) => ({ reason, count }));
+
     return buildSimulationReport(
       this.config.initialBalanceUsd,
       finalBalance,
       this.tradesCount,
+      winRatePercent,
       this.liquidationsCount,
       this.maxDrawdownPercent,
+      this.totalFeesPaid,
+      topNoTradeReasons,
       this.log
     );
   }
@@ -148,12 +171,6 @@ export class TradeBot {
     return map[level];
   }
 
-  private getOpenThreshold(): number {
-    const baseThreshold = 0.65;
-    const adjustment = (this.dynamicAggressiveness - 1) * 0.2;
-    return Math.max(0.35, baseThreshold - adjustment);
-  }
-
   private getSizeFraction(): number {
     const baseSize = 0.08;
     const adjustment = (this.dynamicAggressiveness - 1) * 0.05;
@@ -165,98 +182,128 @@ export class TradeBot {
     return Math.min(this.config.maxLeverage, Math.max(1, baseLeverage));
   }
 
-  private makeDecision(combinedSignal: CombinedSignal, riskLevel: RiskLevel): SimulationTradeDecision {
-    const positions = this.execution.getActivePositions();
-
-    if (riskLevel === 'extreme' && positions.length > 0) {
-      return {
-        action: 'close',
-        reason: 'Emergency close due to extreme liquidation risk',
-      };
-    }
-
-    if (positions.length > 0) {
-      const position = positions[0];
-
-      const closeThreshold = this.getOpenThreshold() * 0.7;
-      const shouldClose =
-        (position.side === 'long' && combinedSignal.scoreSell - combinedSignal.scoreBuy > closeThreshold) ||
-        (position.side === 'short' && combinedSignal.scoreBuy - combinedSignal.scoreSell > closeThreshold);
-
-      if (shouldClose) {
-        return {
-          action: 'close',
-          reason: `Closing ${position.side} position due to strengthening opposite signal`,
-        };
-      }
-
-      return {
-        action: 'hold',
-        reason: 'Holding existing position',
-      };
-    }
-
-    const openThreshold = this.getOpenThreshold();
-    const longBias = combinedSignal.scoreBuy - combinedSignal.scoreSell;
-    const shortBias = combinedSignal.scoreSell - combinedSignal.scoreBuy;
-    const sizeFraction = this.getSizeFraction();
-    const leverage = this.getLeverage();
-
-    if (longBias > openThreshold) {
-      return {
-        action: 'open-long',
-        sizeFraction,
-        leverage,
-        reason: `Buy bias ${longBias.toFixed(2)} (threshold ${openThreshold.toFixed(2)})`,
-      };
-    } else if (shortBias > openThreshold) {
-      return {
-        action: 'open-short',
-        sizeFraction,
-        leverage,
-        reason: `Sell bias ${shortBias.toFixed(2)} (threshold ${openThreshold.toFixed(2)})`,
-      };
-    }
-
-    return {
-      action: 'hold',
-      reason: 'No strong signal detected',
-    };
+  private generateSignal(candles: Candle[], indicators: IndicatorSet, regime: MarketRegime): SignalResult {
+    return generateSignal(candles, { indicators, regime }, { strategy: this.config.strategy });
   }
 
-  private async executeDecision(
-    decision: SimulationTradeDecision,
-    currentPrice: number,
-    stepCount: number
-  ): Promise<void> {
-    try {
-      if (decision.action === 'open-long' || decision.action === 'open-short') {
-        const side = decision.action === 'open-long' ? 'long' : 'short';
-        const sizeFraction = decision.sizeFraction || 0.1;
-        const leverage = decision.leverage || 2;
+  private validateSignal(signal: SignalResult, riskLevel: RiskLevel, stepCount: number): RiskValidationResult {
+    if (riskLevel === 'extreme' && this.execution.getActivePositions().length > 0) {
+      return {
+        ok: true,
+      };
+    }
 
-        const availableBalance = this.execution.getBalance();
-        const margin = availableBalance * sizeFraction;
-        const notional = margin * leverage;
-        const size = notional / currentPrice;
+    if (signal.action === 'HOLD') {
+      return { ok: false, rejectReason: signal.reason };
+    }
 
-        this.execution.openPosition(side, currentPrice, size, leverage, this.config.mmr);
-        this.tradesCount++;
+    if (signal.confidence < this.config.minConfidence) {
+      return {
+        ok: false,
+        rejectReason: `Confidence ${signal.confidence.toFixed(2)} below minimum ${this.config.minConfidence.toFixed(2)}`,
+      };
+    }
 
-        this.log.push(
-          `[Step ${stepCount}] OPEN ${side.toUpperCase()} | Price: $${currentPrice.toFixed(2)} | Size: ${size.toFixed(4)} | Leverage: ${leverage}x | Reason: ${decision.reason}`
-        );
-      } else if (decision.action === 'close') {
-        const positions = this.execution.getActivePositions();
-        if (positions.length > 0) {
-          this.execution.closePosition(0, currentPrice);
-          this.log.push(
-            `[Step ${stepCount}] CLOSE | Price: $${currentPrice.toFixed(2)} | Reason: ${decision.reason}`
-          );
-        }
+    if (this.lastTradeStep !== null && stepCount - this.lastTradeStep < this.config.cooldownBars) {
+      return {
+        ok: false,
+        rejectReason: `Cooldown active (${this.config.cooldownBars} bars)`,
+      };
+    }
+
+    const positions = this.execution.getActivePositions();
+    if (positions.length > 0) {
+      const position = positions[0];
+      if (signal.action === 'BUY' && position.side === 'long') {
+        return { ok: false, rejectReason: 'Already in long position' };
       }
+      if (signal.action === 'SELL' && position.side === 'short') {
+        return { ok: false, rejectReason: 'Already in short position' };
+      }
+    }
+
+    return { ok: true };
+  }
+
+  private applySignal(
+    signal: SignalResult,
+    currentPrice: number,
+    stepCount: number,
+    riskLevel: RiskLevel
+  ): ExecutionResult {
+    try {
+      const positions = this.execution.getActivePositions();
+      if (riskLevel === 'extreme' && positions.length > 0) {
+        const notional = positions[0].size * currentPrice;
+        const feeRate = 0.0004;
+        const feePaid = notional * feeRate;
+        const pnl = this.execution.closePosition(0, currentPrice);
+        this.execution.applyFee(feePaid);
+        this.closedTrades += 1;
+        if (pnl > 0) {
+          this.winningTrades += 1;
+        }
+        this.lastTradeStep = stepCount;
+        this.log.push(
+          `[Step ${stepCount}] CLOSE | Price: $${currentPrice.toFixed(2)} | Reason: Emergency close due to extreme liquidation risk`
+        );
+        return { action: 'close', reason: 'Emergency close due to extreme liquidation risk', pnl, feePaid };
+      }
+
+      if (signal.action === 'HOLD') {
+        return { action: 'hold', reason: signal.reason };
+      }
+
+      if (positions.length > 0) {
+        const position = positions[0];
+        const shouldClose =
+          (signal.action === 'BUY' && position.side === 'short') ||
+          (signal.action === 'SELL' && position.side === 'long');
+        if (shouldClose) {
+          const notional = position.size * currentPrice;
+          const feeRate = 0.0004;
+          const feePaid = notional * feeRate;
+          const pnl = this.execution.closePosition(0, currentPrice);
+          this.execution.applyFee(feePaid);
+          this.closedTrades += 1;
+          if (pnl > 0) {
+            this.winningTrades += 1;
+          }
+          this.lastTradeStep = stepCount;
+          this.log.push(
+            `[Step ${stepCount}] CLOSE | Price: $${currentPrice.toFixed(2)} | Reason: ${signal.reason}`
+          );
+          return { action: 'close', reason: signal.reason, pnl, feePaid };
+        }
+        return { action: 'hold', reason: 'Holding existing position' };
+      }
+
+      const side = signal.action === 'BUY' ? 'long' : 'short';
+      const sizeFraction = this.getSizeFraction();
+      const leverage = this.getLeverage();
+
+      const availableBalance = this.execution.getBalance();
+      const margin = availableBalance * sizeFraction;
+      const notional = margin * leverage;
+      const size = notional / currentPrice;
+      const feeRate = 0.0004;
+      const feePaid = notional * feeRate;
+
+      this.execution.openPosition(side, currentPrice, size, leverage, this.config.mmr);
+      this.execution.applyFee(feePaid);
+      this.tradesCount += 1;
+      this.lastTradeStep = stepCount;
+
+      this.log.push(
+        `[Step ${stepCount}] OPEN ${side.toUpperCase()} | Price: $${currentPrice.toFixed(2)} | Size: ${size.toFixed(
+          4
+        )} | Leverage: ${leverage}x | Reason: ${signal.reason}`
+      );
+
+      return { action: side === 'long' ? 'open-long' : 'open-short', reason: signal.reason, feePaid };
     } catch (error) {
       this.log.push(`[Step ${stepCount}] ERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return { action: 'hold', reason: 'Execution error' };
     }
   }
 
@@ -272,6 +319,20 @@ export class TradeBot {
     const drawdown = ((this.peakBalance - equity) / this.peakBalance) * 100;
     if (drawdown > this.maxDrawdownPercent) {
       this.maxDrawdownPercent = drawdown;
+    }
+  }
+
+  private recordNoTrade(reason: string, stepCount: number): void {
+    if (!reason) return;
+    const normalized = reason.trim();
+    this.noTradeReasons.set(normalized, (this.noTradeReasons.get(normalized) ?? 0) + 1);
+
+    if (!this.config.logNoTrade) return;
+    const shouldLog =
+      stepCount % this.noTradeLogEvery === 0 || normalized !== this.lastNoTradeReason;
+    if (shouldLog) {
+      this.log.push(`[Step ${stepCount}] NO-TRADE | ${normalized}`);
+      this.lastNoTradeReason = normalized;
     }
   }
 }

@@ -55,7 +55,7 @@ export class OrderExecutionEngine {
     });
   }
 
-  closePosition(index: number, price: number): void {
+  closePosition(index: number, price: number): number {
     if (index < 0 || index >= this.positions.length) {
       throw new Error('Invalid position index');
     }
@@ -69,6 +69,7 @@ export class OrderExecutionEngine {
     this.balanceUsd += position.initialMargin + pnl;
 
     this.positions.splice(index, 1);
+    return pnl;
   }
 
   onPriceUpdate(price: number): void {
@@ -117,6 +118,11 @@ export class OrderExecutionEngine {
 
   getBalance(): number {
     return this.balanceUsd;
+  }
+
+  applyFee(amount: number): void {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    this.balanceUsd = Math.max(0, this.balanceUsd - amount);
   }
 
   getPositions(): SimulatedPosition[] {
