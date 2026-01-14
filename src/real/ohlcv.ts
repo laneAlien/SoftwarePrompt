@@ -1,6 +1,7 @@
 import ccxt from 'ccxt';
 import fs from 'fs';
 import path from 'path';
+import { createExchangeOptions } from './exchangeUtils';
 
 export interface OHLCV {
   timestamp: number;
@@ -174,9 +175,7 @@ export async function fetchOHLCV(
   limit: number = DEFAULT_LIMIT,
   options: FetchOHLCVOptions = {}
 ): Promise<OHLCV[]> {
-  const exchange = new (ccxt as any)[exchangeId]({
-    enableRateLimit: true,
-  });
+  const exchange = new (ccxt as any)[exchangeId](createExchangeOptions());
 
   const sinceTimestamp = exchange.parse8601(since);
   const untilTimestamp = options.until ? exchange.parse8601(options.until) : Date.now();

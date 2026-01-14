@@ -2,8 +2,8 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import ccxt, { Exchange } from 'ccxt';
 import { Command } from 'commander';
-import { fetchOHLCV } from './real/ohlcv';
 import { detectRegime } from './core/regime';
 import { analyzeLedger, importLedger, LedgerEntry, LedgerFeeMode, LedgerSummary } from './core/importLedger';
 import { getProfileDefaults } from './core/profiles';
@@ -23,10 +23,10 @@ import { parseReport } from './reports/reportParser';
 import { exportReport } from './reports/reportGenerator';
 import { validateEnv } from './utils/env';
 import { fetchFundingRate } from './indicators/fundingRate';
-import { clearOhlcvCache } from './real/exchangeUtils';
+import { createExchangeOptions } from './real/exchangeUtils';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
-import { AppConfig, FeeDefaults, loadConfig, resolveConfigPath } from './core/config';
+import { AppConfig, FeeDefaults, OhlcvSource, loadConfig, resolveConfigPath } from './core/config';
 import { sma } from './indicators/sma';
 import {
   renderAsciiChart,
@@ -46,6 +46,7 @@ import {
   printMarkdownReport,
   printTextReport,
 } from './core/output';
+import { resolveOhlcv } from './real/resolveOhlcv';
 
 const program = new Command();
 
@@ -62,8 +63,6 @@ Examples:
 `
   )
   .version('1.0.0');
-
-type OhlcvSource = 'exchange' | 'cache';
 
 interface OutputMetrics {
   pnlGross: number;
@@ -247,6 +246,32 @@ function parseNumber(value: string | undefined, fallback: number): number {
 function readStringOption(options: Record<string, unknown>, key: string): string | undefined {
   const value = options[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+function readBooleanOption(options: Record<string, unknown>, key: string): boolean | undefined {
+  const value = options[key];
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    return parseOptionalBoolean(value);
+  }
+  return undefined;
+}
+
+function resolveRateLimit(options: Record<string, unknown>): boolean {
+  const resolved = readBooleanOption(options, 'rateLimit');
+  return resolved ?? true;
+}
+
+function createCcxtExchange(exchangeId: string, options: Record<string, unknown>): Exchange {
+  const ExchangeCtor = (ccxt as any)[exchangeId];
+  if (!ExchangeCtor) {
+    throw new Error(`Unsupported exchange: ${exchangeId}`);
+  }
+  return new ExchangeCtor(
+    createExchangeOptions({
+      enableRateLimit: resolveRateLimit(options),
+    })
+  );
 }
 
 function resolveConfigInfo(options: Record<string, unknown>): {
@@ -619,7 +644,7 @@ function buildRecommendedCommand(params: {
   mode: string;
 }): string {
   const parts = [
-    'npm run cli -- backtest-grid',
+    'npm start -- backtest-grid',
     params.profile ? `--profile ${params.profile}` : undefined,
     `--exchange ${params.exchange}`,
     `--symbol ${params.symbol}`,
@@ -726,13 +751,16 @@ async function resolveGtFeeQuoteResolver(
   const since = new Date(Math.min(...gtFeeTimes)).toISOString();
   const until = new Date(Math.max(...gtFeeTimes)).toISOString();
   const gtOhlcv = await resolveOhlcv({
-    exchange: options.exchange,
+    exchange: readStringOption(options, 'exchange') ?? 'gate',
     symbol: 'GT/USDT',
-    timeframe: options.timeframe,
+    timeframe: readStringOption(options, 'timeframe') ?? '1m',
     since,
     until,
-    ohlcvSource: options.ohlcvSource,
-    ohlcvLimit: options.ohlcvLimit,
+    source: (readStringOption(options, 'ohlcvSource') as OhlcvSource) ?? 'auto',
+    limit: parseNumber(readStringOption(options, 'ohlcvLimit'), 10000),
+    rebuildCache: readBooleanOption(options, 'rebuildCache'),
+    fillGaps: readBooleanOption(options, 'fillGaps'),
+    rateLimit: resolveRateLimit(options),
   });
   if (!gtOhlcv.length) {
     return { ohlcvCount: 0 };
@@ -871,6 +899,7 @@ function buildBacktestParamRows(params: {
   allocation: number;
   trailStepPercent?: number;
   stopOnMa30?: boolean;
+  maTimeframe?: string;
   stopOnLowCloses?: number;
 }): Record<string, ReportValue> {
   return {
@@ -880,58 +909,9 @@ function buildBacktestParamRows(params: {
     allocation: params.allocation,
     trail_step_percent: params.trailStepPercent ?? null,
     stop_on_ma30: params.stopOnMa30 ?? null,
+    ma_timeframe: params.maTimeframe ?? null,
     stop_on_low_closes: params.stopOnLowCloses ?? null,
   };
-}
-
-function resolveOhlcvCachePath(exchange: string, symbol: string, timeframe: string): string {
-  return path.join('data', 'ohlcv', exchange, symbol.replace('/', '_'), `${timeframe}.jsonl`);
-}
-
-function loadOhlcvFromCache(
-  exchange: string,
-  symbol: string,
-  timeframe: string,
-  since: string,
-  until?: string,
-  limit = 1000
-): { timestamp: number; open: number; high: number; low: number; close: number; volume: number }[] {
-  const cachePath = resolveOhlcvCachePath(exchange, symbol, timeframe);
-  if (!fs.existsSync(cachePath)) {
-    throw new Error(`Cache file not found: ${cachePath}`);
-  }
-  const sinceTime = Date.parse(since);
-  const untilTime = until ? Date.parse(until) : Date.now();
-  const rows = fs
-    .readFileSync(cachePath, 'utf-8')
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
-  return rows
-    .filter((row) => row.timestamp >= sinceTime && row.timestamp <= untilTime)
-    .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(0, limit);
-}
-
-async function resolveOhlcv(options: Record<string, unknown>): Promise<ReturnType<typeof fetchOHLCV>> {
-  const source = (readStringOption(options, 'ohlcvSource') as OhlcvSource) ?? 'exchange';
-  const exchange = readStringOption(options, 'exchange') ?? 'gate';
-  const symbol = readStringOption(options, 'symbol') ?? 'RAVE/USDT';
-  const timeframe = readStringOption(options, 'timeframe') ?? '1m';
-  const since = readStringOption(options, 'since') ?? '2025-12-12';
-  const until = readStringOption(options, 'until');
-  const limit = parseNumber(readStringOption(options, 'limit') ?? readStringOption(options, 'ohlcvLimit'), 1000);
-
-  if (source === 'cache') {
-    return loadOhlcvFromCache(exchange, symbol, timeframe, since, until, limit);
-  }
-
-  const rebuildOption = options.rebuild;
-  const rebuildCache = typeof rebuildOption === 'boolean' ? rebuildOption : rebuildOption === 'true';
-  return fetchOHLCV(exchange, symbol, timeframe, since, limit, {
-    until,
-    rebuildCache,
-  });
 }
 
 type WizardGoal = 'profit' | 'turnover';
@@ -1038,7 +1018,7 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
       'ohlcvSource',
       ['--ohlcv-source'],
       outputDefaults.ohlcvSource,
-      'exchange'
+      'auto'
     );
     const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
     const decisionTimeframe = '15m';
@@ -1048,8 +1028,11 @@ async function handleDecide(options: Record<string, unknown>): Promise<void> {
       timeframe: decisionTimeframe,
       since,
       until,
-      limit: String(limit),
-      ohlcvSource,
+      limit,
+      source: ohlcvSource as OhlcvSource,
+      rebuildCache: readBooleanOption(options, 'rebuildCache'),
+      fillGaps: readBooleanOption(options, 'fillGaps'),
+      rateLimit: resolveRateLimit(options),
     });
     if (!ohlcv.length) {
       renderReportWithSave(
@@ -1211,7 +1194,7 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       'ohlcvSource',
       ['--ohlcv-source'],
       outputDefaults.ohlcvSource,
-      'exchange'
+      'auto'
     );
     const mode = resolveConfigString(options, 'mode', ['--mode'], outputDefaults.mode, 'spot').toLowerCase();
     const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
@@ -1221,9 +1204,11 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       timeframe,
       since,
       until,
-      limit: String(limit),
-      ohlcvSource,
-      rebuild: options.rebuild,
+      limit,
+      source: ohlcvSource as OhlcvSource,
+      rebuildCache: readBooleanOption(options, 'rebuildCache'),
+      fillGaps: readBooleanOption(options, 'fillGaps'),
+      rateLimit: resolveRateLimit(options),
     });
     if (!ohlcv.length) {
       renderReportWithSave(
@@ -1287,6 +1272,8 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       ['--stop-on-ma30'],
       profileDefaults.stopOnMa30
     );
+    const maTimeframeInput = (readStringOption(options, 'maTimeframe') ?? '15m').toLowerCase();
+    const maTimeframe = maTimeframeInput === 'native' ? 'native' : '15m';
     const stopOnLowCloses = resolveProfiledOptionalNumber(
       options,
       'stopOnLowCloses',
@@ -1302,6 +1289,7 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
       ...feeOptions,
       trailStepPercent,
       stopOnMa30,
+      maTimeframe,
       stopOnLowCloses,
     };
     const gridResult =
@@ -1311,6 +1299,7 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
             sourceTimeframe: timeframe,
             trailStepPercent: trailStepPercent ?? 0,
             stopOnMa30,
+            maTimeframe,
             stopOnLowCloses,
           })
         : runGridBacktest(commonOptions);
@@ -1342,6 +1331,7 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
             allocation,
             trailStepPercent,
             stopOnMa30,
+            maTimeframe,
             stopOnLowCloses,
           }),
         },
@@ -1414,9 +1404,11 @@ async function runWizard(): Promise<void> {
   const defaultSymbol = config.symbols?.[0] ?? 'RAVE/USDT';
   const defaultSince = outputDefaults.since ?? '2024-01-01';
   const defaultSource: OhlcvSource =
-    outputDefaults.ohlcvSource === 'cache' || outputDefaults.ohlcvSource === 'exchange'
+    outputDefaults.ohlcvSource === 'cache' ||
+    outputDefaults.ohlcvSource === 'exchange' ||
+    outputDefaults.ohlcvSource === 'auto'
       ? outputDefaults.ohlcvSource
-      : 'exchange';
+      : 'auto';
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -1429,7 +1421,7 @@ async function runWizard(): Promise<void> {
     const until = await promptOptionalInput(rl, 'Until (ISO)', outputDefaults.until);
     const goal = await promptChoice(rl, 'Цель', ['profit', 'turnover'] as const, 'profit');
     const risk = await promptChoice(rl, 'Риск', ['safe', 'default', 'aggressive'] as const, 'default');
-    const source = await promptChoice(rl, 'Источник OHLCV', ['cache', 'exchange'] as const, defaultSource);
+    const source = await promptChoice(rl, 'Источник OHLCV', ['cache', 'exchange', 'auto'] as const, defaultSource);
     const profile = selectWizardProfile(goal, risk);
     console.log(`Selected profile: ${profile}`);
 
@@ -1496,21 +1488,33 @@ Examples:
   .option('--since <since>', 'Start date (ISO)', '2025-12-12')
   .option('--until <until>', 'End date (ISO)')
   .option('--limit <limit>', 'Max candles', '1000')
-  .option('--rebuild', 'Rebuild cache', false)
+  .option('--rebuild-cache', 'Rebuild cache', false)
+  .option('--rebuild', 'Rebuild cache (deprecated)', false)
+  .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
+  .option('--no-rate-limit', 'Disable CCXT rate limiting')
   .addHelpText(
     'after',
     `
 Examples:
   $ npm start -- data:fetch-ohlcv --exchange gate --symbol RAVE/USDT --timeframe 1m --since 2024-01-01
-  $ npm start -- data:fetch-ohlcv --symbol BTC/USDT --timeframe 1h --since 2024-06-01 --limit 500 --rebuild
+  $ npm start -- data:fetch-ohlcv --symbol BTC/USDT --timeframe 1h --since 2024-06-01 --limit 500 --rebuild-cache
 `
   )
   .action(async (options) => {
     try {
       const limit = parseInt(options.limit, 10);
-      const data = await fetchOHLCV(options.exchange, options.symbol, options.timeframe, options.since, limit, {
+      const rebuildCache = Boolean(options.rebuildCache || options.rebuild);
+      const data = await resolveOhlcv({
+        exchange: options.exchange,
+        symbol: options.symbol,
+        timeframe: options.timeframe,
+        since: options.since,
         until: options.until,
-        rebuildCache: options.rebuild,
+        limit,
+        source: 'exchange',
+        rebuildCache,
+        fillGaps: Boolean(options.fillGaps),
+        rateLimit: resolveRateLimit(options),
       });
       console.log(`Fetched ${data.length} candles.`);
     } catch (error) {
@@ -1528,6 +1532,10 @@ program
   .option('--slope-window <number>', 'MA30 slope window', '5')
   .option('--min-slope <number>', 'Minimum MA30 slope to confirm trend', '0.0001')
   .option('--min-distance <number>', 'Minimum price distance to MA30', '0.001')
+  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache|auto', 'auto')
+  .option('--rebuild-cache', 'Rebuild cache', false)
+  .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
+  .option('--no-rate-limit', 'Disable CCXT rate limiting')
   .option('--plot <type>', 'Plot type: ascii')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
@@ -1543,9 +1551,17 @@ Examples:
   .action(async (options) => {
     const outputFormat = readOutputFormat(options);
     const limit = parseInt(options.limit, 10);
-    const ohlcv = await fetchOHLCV(options.exchange, options.symbol, '15m', options.since, limit, {
-      rebuildCache: false,
+    const ohlcv = await resolveOhlcv({
+      exchange: options.exchange,
+      symbol: options.symbol,
+      timeframe: '15m',
+      since: options.since,
       until: options.until,
+      limit,
+      source: options.ohlcvSource,
+      rebuildCache: Boolean(options.rebuildCache),
+      fillGaps: Boolean(options.fillGaps),
+      rateLimit: resolveRateLimit(options),
     });
     if (!ohlcv.length) {
       renderReportWithSave(
@@ -1615,6 +1631,10 @@ Examples:
   .option('--limit <number>', 'Number of candles', '200')
   .option('--since <string>', 'Start date (YYYY-MM-DD) for historical data')
   .option('--months <number>', 'Number of months back to fetch')
+  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache|auto', 'auto')
+  .option('--rebuild-cache', 'Rebuild cache', false)
+  .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
+  .option('--no-rate-limit', 'Disable CCXT rate limiting')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .option('--no-llm', 'Disable LLM analysis output')
@@ -1623,38 +1643,43 @@ Examples:
     const outputFormat = readOutputFormat(options);
 
     try {
-      if (options.noCache) {
-        clearOhlcvCache();
-      }
-      const client = options.exchange === 'kucoin' ? new KucoinClient() : new GateClient();
-      let since: number | undefined;
-      let to: number | undefined;
+      const exchange = createCcxtExchange(options.exchange, options);
+      let since: string | undefined;
+      let until: string | undefined;
       if (options.since) {
-        since = Date.parse(options.since);
-        to = Date.now();
+        since = options.since;
+        until = new Date().toISOString();
       } else if (options.months) {
         const months = parseInt(options.months);
-        to = Date.now();
         const date = new Date();
         date.setMonth(date.getMonth() - months);
-        since = date.getTime();
+        since = date.toISOString();
+        until = new Date().toISOString();
       }
 
-      const candles = await client.fetchCandles(
-        options.symbol,
-        options.timeframe,
-        parseInt(options.limit),
+      const limit = parseInt(options.limit, 10);
+      const ohlcvSource = options.noCache ? 'exchange' : options.ohlcvSource;
+      const candlesRaw = await resolveOhlcv({
+        exchange,
+        symbol: options.symbol,
+        timeframe: options.timeframe,
         since,
-        to,
-        { skipCache: options.noCache }
-      );
+        until,
+        limit,
+        source: ohlcvSource,
+        rebuildCache: Boolean(options.rebuildCache || options.noCache),
+        fillGaps: Boolean(options.fillGaps),
+      });
+      const candles = candlesRaw.map((candle) => ({
+        ...candle,
+        timeframe: options.timeframe,
+        symbol: options.symbol,
+      }));
       const currentPrice = candles[candles.length - 1].close;
 
       let fundingRate: number | undefined;
       if (options.timeframe.endsWith('m') || options.timeframe.endsWith('h')) {
-        const funding = await fetchFundingRate((client as any).exchange ?? (client as any), options.symbol).catch(
-          () => null
-        );
+        const funding = await fetchFundingRate(exchange, options.symbol).catch(() => null);
         fundingRate = funding?.rate;
       }
 
@@ -1748,13 +1773,15 @@ Examples:
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
   .option('--no-llm', 'Disable LLM analysis')
+  .option('--no-rate-limit', 'Disable CCXT rate limiting')
   .action(async (options) => {
     const outputFormat = readOutputFormat(options);
 
     try {
       const clients = [];
-      if (process.env.KUCOIN_API_KEY) clients.push(new KucoinClient());
-      if (process.env.GATE_API_KEY) clients.push(new GateClient());
+      const enableRateLimit = resolveRateLimit(options);
+      if (process.env.KUCOIN_API_KEY) clients.push(new KucoinClient(undefined, undefined, undefined, { enableRateLimit }));
+      if (process.env.GATE_API_KEY) clients.push(new GateClient(undefined, undefined, { enableRateLimit }));
 
       if (clients.length === 0) {
         console.log('No exchange API keys configured. Please set KUCOIN_API_KEY or GATE_API_KEY in .env');
@@ -2053,7 +2080,10 @@ program
   .option('--slope-window <number>', 'MA30 slope window', '5')
   .option('--min-slope <number>', 'Minimum MA30 slope to confirm trend', '0.0001')
   .option('--min-distance <number>', 'Minimum price distance to MA30', '0.001')
-  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
+  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache|auto', 'auto')
+  .option('--rebuild-cache', 'Rebuild cache', false)
+  .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
+  .option('--no-rate-limit', 'Disable CCXT rate limiting')
   .option('--fee-model <model>', 'Fee model: flat|maker-taker', 'flat')
   .option('--fee-rate <feeRate>', 'Grid fee rate', '0.002')
   .option('--maker-fee-rate <rate>', 'Maker fee rate', '0.001')
@@ -2084,7 +2114,10 @@ program
   .option('--exchange <exchange>', 'Exchange ID', 'gate')
   .option('--symbol <symbol>', 'Symbol', 'RAVE/USDT')
   .option('--timeframe <timeframe>', 'Timeframe', '1m')
-  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
+  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache|auto', 'auto')
+  .option('--rebuild-cache', 'Rebuild cache', false)
+  .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
+  .option('--no-rate-limit', 'Disable CCXT rate limiting')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .option('--output <format>', 'Output format: text|json|md', 'text')
@@ -2166,8 +2199,10 @@ program
   .option('--since <since>', 'Start date (ISO)', '2025-12-12')
   .option('--until <until>', 'End date (ISO)')
   .option('--limit <limit>', 'Max candles', '1000')
-  .option('--rebuild', 'Rebuild cache', false)
-  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'exchange')
+  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache|auto', 'auto')
+  .option('--rebuild-cache', 'Rebuild cache', false)
+  .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
+  .option('--no-rate-limit', 'Disable CCXT rate limiting')
   .option('--mode <mode>', 'Backtest mode: spot|trailing', 'spot')
   .option('--low <low>', 'Grid low price (number|auto)')
   .option('--high <high>', 'Grid high price (number|auto)')
@@ -2186,6 +2221,7 @@ program
   .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
   .option('--trail-step-percent <percent>', 'Trailing grid step percent')
+  .option('--ma-timeframe <timeframe>', 'MA30 stop timeframe: 15m|native', '15m')
   .option('--stop-on-ma30 <enabled>', 'Stop when close drops below MA30 (true|false)')
   .option('--stop-on-low-closes <count>', 'Stop after N closes below grid low')
   .option('--plot <type>', 'Plot type: ascii|png (png saved to reports/)')
@@ -2229,7 +2265,10 @@ program
   .option('--minimum-fee <fee>', 'Minimum fee per order', '0')
   .option('--fee-rounding-decimals <decimals>', 'Fee rounding decimals')
   .option('--slippage-rate <rate>', 'Slippage rate', '0')
-  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache', 'cache')
+  .option('--ohlcv-source <source>', 'OHLCV source: exchange|cache|auto', 'auto')
+  .option('--rebuild-cache', 'Rebuild cache', false)
+  .option('--fill-gaps', 'Fill missing OHLCV gaps', false)
+  .option('--no-rate-limit', 'Disable CCXT rate limiting')
   .option('--ohlcv-limit <limit>', 'Max candles', '10000')
   .option('--ledger-fee-mode <mode>', 'Ledger fee mode: separate|ohlcv', 'separate')
   .option('--plot <type>', 'Plot type: png (saved to reports/)')
@@ -2258,7 +2297,7 @@ Examples:
         'ohlcvSource',
         ['--ohlcv-source'],
         outputDefaults.ohlcvSource,
-        'cache'
+        'auto'
       );
       const ohlcvLimit = resolveConfigNumber(options, 'ohlcvLimit', ['--ohlcv-limit'], outputDefaults.limit, 10000);
       const { name: profileName, defaults: profileDefaults } = getProfileDefaults(readStringOption(options, 'profile'));
@@ -2275,6 +2314,8 @@ Examples:
         timeframe,
         ohlcvSource,
         ohlcvLimit: String(ohlcvLimit),
+        rebuildCache: readBooleanOption(options, 'rebuildCache'),
+        fillGaps: readBooleanOption(options, 'fillGaps'),
       };
       const gtFeeResolution =
         feeMode === 'ohlcv'
@@ -2321,8 +2362,11 @@ Examples:
         timeframe,
         since: backtestSince,
         until: backtestUntil,
-        ohlcvSource,
-        ohlcvLimit: String(ohlcvLimit),
+        source: ohlcvSource as OhlcvSource,
+        limit: ohlcvLimit,
+        rebuildCache: readBooleanOption(options, 'rebuildCache'),
+        fillGaps: readBooleanOption(options, 'fillGaps'),
+        rateLimit: resolveRateLimit(options),
       });
       if (!ohlcv.length) {
         renderReportWithSave(

@@ -114,7 +114,7 @@ npm start analyze-news -- --symbol TON
 * посмотреть режим
 
 ```bash
-npm start -- analyze-regime --exchange gate --symbol RAVE/USDT --since 2024-01-01
+npm start -- analyze-regime --exchange gate --symbol RAVE/USDT --since 2024-01-01 --ohlcv-source auto
 ```
 
 * бэктест grid
@@ -132,14 +132,16 @@ npm start -- compare ./data/ledger.csv --symbol RAVE/USDT
 * PROMO MODE
 
 ```bash
-npm start -- backtest-grid --profile promo --symbol RAVE/USDT --since 2024-01-01 --mode trailing
+npm start -- backtest-grid --profile promo --symbol RAVE/USDT --since 2024-01-01 --mode trailing --save-report
 ```
+
+> По умолчанию stop по MA30 считается на 15m свечах (используйте `--ma-timeframe native`, чтобы оставить нативный таймфрейм).
 
 ## Report Analysis
 Supply CSV/TSV/Excel reports containing `day`, `spent`, `voucherIncome`, and `profit` columns. The assistant aggregates totals and adjusts strategy confidence when losses dominate.
 
 ## LLM Integration
-The LLM layer prefers **DeepSeek** when `DEEPSEEK_API_KEY` is present (base URL `https://api.deepseek.com/v1`, default model `deepseek-chat`), otherwise it falls back to OpenAI via `OPENAI_API_KEY`. Use `--no-llm` to disable prompts. Outputs are scenario-based (conservative/moderate/aggressive) and avoid direct buy/sell instructions.
+The LLM layer prefers **DeepSeek** when `DEEPSEEK_API_KEY` is present (base URL `https://api.deepseek.com/v1`, default model `deepseek-chat`), otherwise it uses OpenAI via `OPENAI_API_KEY` with `LLM_MODEL` set. Use `--no-llm` to disable prompts. Outputs are scenario-based (conservative/moderate/aggressive) and avoid direct buy/sell instructions.
 
 ## Historical Data & Funding
 `analyze-pair` supports long lookbacks via `--since` or `--months`, invoking paginated `fetchFullOHLCV`. For perpetual pairs on sub-daily timeframes, funding rates are fetched and shown alongside OBV and VWAP.

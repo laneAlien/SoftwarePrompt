@@ -11,11 +11,12 @@ export class GateClient implements ExchangeClient {
   private static marketsLoaded = false;
   private candleCache = new Map<string, Candle[]>();
 
-  constructor(apiKey?: string, apiSecret?: string) {
+  constructor(apiKey?: string, apiSecret?: string, options: { enableRateLimit?: boolean } = {}) {
     this.exchange = new ccxt.gate(
       createExchangeOptions({
         apiKey: apiKey || process.env.GATE_API_KEY,
         secret: apiSecret || process.env.GATE_API_SECRET,
+        enableRateLimit: options.enableRateLimit,
       })
     );
   }

@@ -3,7 +3,7 @@ import path from 'path';
 
 export type FeeModel = 'flat' | 'maker-taker';
 export type VoucherDiscountType = 'percent' | 'fixed';
-export type OhlcvSource = 'exchange' | 'cache';
+export type OhlcvSource = 'exchange' | 'cache' | 'auto';
 export type BacktestMode = 'spot' | 'trailing';
 
 export interface FeeDefaults {
@@ -86,7 +86,10 @@ function normalizeOutputDefaults(raw: unknown): OutputDefaults | undefined {
     since: toString(raw.since),
     until: toString(raw.until),
     limit: toNumber(raw.limit),
-    ohlcvSource: ohlcvSource === 'exchange' || ohlcvSource === 'cache' ? ohlcvSource : undefined,
+    ohlcvSource:
+      ohlcvSource === 'exchange' || ohlcvSource === 'cache' || ohlcvSource === 'auto'
+        ? ohlcvSource
+        : undefined,
     mode: mode === 'spot' || mode === 'trailing' ? mode : undefined,
   };
 }
