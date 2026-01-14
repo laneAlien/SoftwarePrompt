@@ -4,8 +4,11 @@ export interface SimulationReport {
   pnl: number;
   pnlPercent: number;
   trades: number;
+  winRatePercent: number;
   liquidations: number;
   maxDrawdownPercent: number;
+  feesPaid: number;
+  noTradeReasons: Array<{ reason: string; count: number }>;
   log: string[];
 }
 
@@ -13,8 +16,11 @@ export function buildSimulationReport(
   initialBalance: number,
   finalBalance: number,
   tradesCount: number,
+  winRatePercent: number,
   liquidationsCount: number,
   maxDrawdownPercent: number,
+  feesPaid: number,
+  noTradeReasons: Array<{ reason: string; count: number }>,
   log: string[]
 ): SimulationReport {
   const pnl = finalBalance - initialBalance;
@@ -25,8 +31,11 @@ export function buildSimulationReport(
     pnl,
     pnlPercent,
     trades: tradesCount,
+    winRatePercent,
     liquidations: liquidationsCount,
     maxDrawdownPercent,
+    feesPaid,
+    noTradeReasons,
     log,
   };
 }
@@ -41,8 +50,12 @@ export function formatSimulationReport(report: SimulationReport): string {
     `Final Balance:       $${report.finalBalance.toFixed(2)}`,
     `PnL:                 $${report.pnl.toFixed(2)} (${report.pnlPercent.toFixed(2)}%)`,
     `Total Trades:        ${report.trades}`,
+    `Win Rate:            ${report.winRatePercent.toFixed(2)}%`,
     `Liquidations:        ${report.liquidations}`,
     `Max Drawdown:        ${report.maxDrawdownPercent.toFixed(2)}%`,
+    `Fees Paid:           $${report.feesPaid.toFixed(2)}`,
+    `Top No-Trade Reasons:`,
+    ...report.noTradeReasons.map((entry) => `  - ${entry.reason} (${entry.count})`),
     '',
     '─'.repeat(60),
     'Trade Log:',

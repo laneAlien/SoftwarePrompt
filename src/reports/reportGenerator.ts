@@ -24,8 +24,10 @@ export function exportReport(report: SimulationReport, options: ExportOptions): 
       `pnl,${report.pnl}`,
       `pnl_percent,${report.pnlPercent}`,
       `trades,${report.trades}`,
+      `win_rate_percent,${report.winRatePercent}`,
       `liquidations,${report.liquidations}`,
       `max_drawdown_percent,${report.maxDrawdownPercent}`,
+      `fees_paid,${report.feesPaid}`,
     ].join('\n');
     fs.writeFileSync(target, rows);
     return target;
@@ -39,12 +41,13 @@ export function exportReport(report: SimulationReport, options: ExportOptions): 
   doc.text(`Final Balance:   $${report.finalBalance.toFixed(2)}`);
   doc.text(`PnL:             $${report.pnl.toFixed(2)} (${report.pnlPercent.toFixed(2)}%)`);
   doc.text(`Trades:          ${report.trades}`);
+  doc.text(`Win Rate:        ${report.winRatePercent.toFixed(2)}%`);
   doc.text(`Liquidations:    ${report.liquidations}`);
   doc.text(`Max Drawdown:    ${report.maxDrawdownPercent.toFixed(2)}%`);
+  doc.text(`Fees Paid:       $${report.feesPaid.toFixed(2)}`);
   doc.moveDown();
   doc.text('Recent Log Entries:');
   report.log.slice(-10).forEach((entry) => doc.text(entry));
   doc.end();
   return target;
 }
-

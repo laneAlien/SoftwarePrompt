@@ -206,8 +206,16 @@ function buildSimulationReportPayload(symbol: string, timeframe: string, report:
           pnl: report.pnl.toFixed(2),
           pnl_percent: report.pnlPercent.toFixed(2),
           trades: report.trades,
+          win_rate_percent: report.winRatePercent.toFixed(2),
           liquidations: report.liquidations,
           max_drawdown_percent: report.maxDrawdownPercent.toFixed(2),
+          fees_paid: report.feesPaid.toFixed(2),
+        },
+      },
+      {
+        title: 'Top no-trade reasons',
+        rows: {
+          reasons: report.noTradeReasons.map((entry) => `${entry.reason} (${entry.count})`).join('\n'),
         },
       },
       {
@@ -2008,6 +2016,10 @@ Examples:
   .option('--mmr <number>', 'Maintenance margin rate', '0.005')
   .option('--history-window <number>', 'History window for indicators', '100')
   .option('--aggressiveness <number>', 'Trade aggressiveness multiplier (0.5-2.0)', '1')
+  .option('--strategy <type>', 'Strategy mode: trend|mean|auto', 'auto')
+  .option('--min-confidence <number>', 'Minimum signal confidence (0..1)', '0.45')
+  .option('--cooldown-bars <number>', 'Cooldown bars between trades', '3')
+  .option('--log-no-trade', 'Log sampled no-trade reasons', false)
   .option('--report <path>', 'External performance report (CSV/TSV/Excel) to adjust risk')
   .option('--save-chart', 'Save PNG and ASCII chart for the simulation')
   .option('--export-report <format>', 'Export simulation report as pdf|json|csv')
@@ -2054,6 +2066,14 @@ Examples:
         mmr: parseFloat(options.mmr),
         historyWindow: parseInt(options.historyWindow),
         aggressiveness: parseFloat(options.aggressiveness),
+        strategy: readStringOption(options, 'strategy') === 'trend'
+          ? 'trend'
+          : readStringOption(options, 'strategy') === 'mean'
+          ? 'mean'
+          : 'auto',
+        minConfidence: parseFloat(options.minConfidence),
+        cooldownBars: parseInt(options.cooldownBars),
+        logNoTrade: readBooleanOption(options, 'logNoTrade') ?? false,
         reportSummary,
       },
       simulator,
