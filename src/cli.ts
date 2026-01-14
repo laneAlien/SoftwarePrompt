@@ -48,6 +48,13 @@ import {
 } from './core/output';
 import { resolveOhlcv } from './real/resolveOhlcv';
 import { CandleSource, getCandles } from './real/getCandles';
+import {
+  calcBufferToLiq,
+  calcIsolatedLiqPriceLong,
+  calcIsolatedLiqPriceShort,
+  positionSizingByRisk,
+  riskDefaults,
+} from './risk/margin';
 
 const program = new Command();
 
@@ -142,6 +149,13 @@ function formatReportOutput(format: OutputFormat, report: ReportPayload): string
     return formatMarkdownReport(report);
   }
   return formatTextReport(report);
+}
+
+function formatNumber(value: number, decimals = 6): string {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+  return value.toFixed(decimals);
 }
 
 function saveReport(
@@ -1551,6 +1565,136 @@ Examples:
       console.log(`Fetched ${data.length} candles.`);
     } catch (error) {
       console.error('Error fetching OHLCV:', error);
+    }
+  });
+
+program
+  .command('risk:calc')
+  .description('Calculate position risk, liquidation, and sizing')
+  .addHelpText(
+    'after',
+    `
+Examples:
+  $ npm start -- risk:calc --symbol TON/USDT --side long --entry 2.90 --balance 1000 --risk 0.01 --leverage 5 --mmr 0.005 --stop 2.80
+  $ npm start -- risk:calc --symbol BTC/USDT --side short --entry 64000 --balance 2500 --risk 0.02 --leverage 10 --output md --save-report
+`
+  )
+  .requiredOption('--symbol <string>', 'Trading pair symbol')
+  .requiredOption('--side <string>', 'Position side (long|short)')
+  .requiredOption('--entry <number>', 'Entry price')
+  .requiredOption('--balance <number>', 'Account balance (quote currency)')
+  .requiredOption('--risk <number>', 'Risk percent as decimal (0.01 = 1%)')
+  .requiredOption('--leverage <number>', 'Leverage to use')
+  .option('--mmr <number>', 'Maintenance margin rate', String(riskDefaults.mmr))
+  .option('--fee-rate <number>', 'Estimated taker fee rate', String(riskDefaults.feeRate))
+  .option('--stop <number>', 'Stop-loss price')
+  .option('--output <format>', 'Output format: text|json|md', 'text')
+  .option('--save-report', 'Save report to file')
+  .action((options) => {
+    const outputFormat = readOutputFormat(options);
+    try {
+      const entry = Number(options.entry);
+      const balance = Number(options.balance);
+      const riskPct = Number(options.risk);
+      const leverage = Number(options.leverage);
+      const mmr = parseOptionalNumber(options.mmr);
+      const feeRate = parseOptionalNumber(options.feeRate);
+      const stop = parseOptionalNumber(options.stop);
+      const side = String(options.side ?? '').toLowerCase();
+
+      if (!Number.isFinite(entry) || entry <= 0) {
+        throw new Error('Entry price must be a positive number.');
+      }
+      if (!Number.isFinite(balance) || balance <= 0) {
+        throw new Error('Balance must be a positive number.');
+      }
+      if (!Number.isFinite(riskPct) || riskPct <= 0 || riskPct >= 1) {
+        throw new Error('Risk percent must be between 0 and 1.');
+      }
+      if (!Number.isFinite(leverage) || leverage <= 0) {
+        throw new Error('Leverage must be a positive number.');
+      }
+      if (side !== 'long' && side !== 'short') {
+        throw new Error('Side must be either "long" or "short".');
+      }
+
+      const resolvedFeeRate = feeRate ?? riskDefaults.feeRate;
+      const resolvedMmr = mmr ?? riskDefaults.mmr;
+
+      const liquidationPrice =
+        side === 'long'
+          ? calcIsolatedLiqPriceLong({ entry, leverage, mmr: resolvedMmr, feeRate: resolvedFeeRate })
+          : calcIsolatedLiqPriceShort({ entry, leverage, mmr: resolvedMmr, feeRate: resolvedFeeRate });
+
+      const { distanceAbs, distancePct } = calcBufferToLiq({
+        entry,
+        liqPrice: liquidationPrice,
+        side: side as 'long' | 'short',
+      });
+
+      const positionNotional = balance * leverage;
+      let positionSize = positionNotional;
+      let marginUsed = positionNotional / leverage;
+      let riskUsd: number | null = null;
+      let maxSizeByRisk: number | null = null;
+
+      if (stop !== undefined) {
+        const sizing = positionSizingByRisk({
+          balance,
+          riskPct,
+          entry,
+          stop,
+          leverageMax: leverage,
+        });
+        positionSize = sizing.positionSize;
+        marginUsed = sizing.marginUsed;
+        riskUsd = sizing.riskUsd;
+        maxSizeByRisk = sizing.positionSize;
+      }
+
+      const baseSize = positionSize / entry;
+      const report = {
+        title: 'Risk calculation',
+        sections: [
+          {
+            title: 'Inputs',
+            rows: {
+              symbol: options.symbol,
+              side,
+              entry: formatNumber(entry, 6),
+              balance: formatNumber(balance, 2),
+              leverage: formatNumber(leverage, 2),
+              risk_pct: formatNumber(riskPct, 4),
+              stop: stop !== undefined ? formatNumber(stop, 6) : 'n/a',
+              mmr: formatNumber(resolvedMmr, 6),
+              fee_rate: formatNumber(resolvedFeeRate, 6),
+            },
+          },
+          {
+            title: 'Position sizing',
+            rows: {
+              position_size_usdt: formatNumber(positionSize, 2),
+              position_size_base: formatNumber(baseSize, 6),
+              initial_margin: formatNumber(marginUsed, 2),
+              risk_usd: riskUsd !== null ? formatNumber(riskUsd, 2) : 'n/a',
+              max_size_by_risk_usdt: maxSizeByRisk !== null ? formatNumber(maxSizeByRisk, 2) : 'n/a',
+            },
+          },
+          {
+            title: 'Liquidation',
+            rows: {
+              liq_price: formatNumber(liquidationPrice, 6),
+              distance_to_liq_abs: formatNumber(distanceAbs, 6),
+              distance_to_liq_pct: formatNumber(distancePct * 100, 2) + '%',
+            },
+          },
+        ],
+      };
+
+      renderReportWithSave('risk:calc', outputFormat, report, options, options.symbol);
+    } catch (error) {
+      console.error('Error calculating risk:', error instanceof Error ? error.message : error);
+      process.exitCode = 1;
     }
   });
 
