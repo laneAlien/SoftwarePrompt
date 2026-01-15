@@ -207,55 +207,88 @@ function buildStatusReport(message: string): ReportPayload {
   };
 }
 
-function buildSimulationReportPayload(symbol: string, timeframe: string, report: SimulationReport): ReportPayload {
+interface TradeSimThresholds {
+  minConfidence: number;
+  cooldownBars: number;
+  strategy: 'trend' | 'mean' | 'auto';
+  aggressiveness: number;
+}
+
+function buildSimulationReportPayload(
+  symbol: string,
+  timeframe: string,
+  report: SimulationReport,
+  thresholds?: TradeSimThresholds
+): ReportPayload {
   const performance = buildPerformanceMetrics(report.equityCurve);
   const formatPercent = (value: number) => (value * 100).toFixed(2);
   const formatNumber = (value: number, decimals = 2) => value.toFixed(decimals);
   const formatRatio = (value: number, decimals = 4) =>
     Number.isFinite(value) ? value.toFixed(decimals) : value > 0 ? '∞' : 'n/a';
+  const topReasons = report.noTradeReasons.map((entry) => `${entry.reason} (${entry.count})`).join('\n') || 'n/a';
+  const blockedBy = report.noTradeReasons[0]
+    ? `${report.noTradeReasons[0].reason} (${report.noTradeReasons[0].count})`
+    : 'n/a';
+  const sections: ReportPayload['sections'] = [
+    {
+      title: 'Summary',
+      rows: {
+        symbol,
+        timeframe,
+        initial_balance: formatNumber(report.initialBalance),
+        final_balance: formatNumber(report.finalBalance),
+        pnl: formatNumber(report.pnl),
+        pnl_percent: report.pnlPercent.toFixed(2),
+        trades: report.trades,
+        liquidations: report.liquidations,
+        fees_paid: formatNumber(report.feesPaid),
+      },
+    },
+    {
+      title: 'Performance metrics',
+      rows: {
+        max_drawdown_percent: formatPercent(performance.maxDrawdown),
+        win_rate_percent: formatPercent(performance.winRate),
+        avg_win: formatNumber(performance.avgWin, 4),
+        avg_loss: formatNumber(performance.avgLoss, 4),
+        profit_factor: formatRatio(performance.profitFactor),
+        expectancy: formatNumber(performance.expectancy, 4),
+      },
+    },
+  ];
+
+  if (report.trades === 0) {
+    sections.push({
+      title: 'No-trade analysis',
+      rows: {
+        min_confidence: thresholds ? formatNumber(thresholds.minConfidence, 4) : 'n/a',
+        cooldown_bars: thresholds?.cooldownBars ?? 'n/a',
+        strategy_mode: thresholds?.strategy ?? 'n/a',
+        aggressiveness: thresholds ? formatNumber(thresholds.aggressiveness, 2) : 'n/a',
+        top_no_trade_reasons: topReasons,
+        blocked_by: blockedBy,
+      },
+    });
+  } else {
+    sections.push({
+      title: 'Top no-trade reasons',
+      rows: {
+        reasons: topReasons,
+      },
+    });
+  }
+
+  sections.push({
+    title: 'Trade log',
+    rows: {
+      entries: report.log.length,
+      log: report.log.join('\n'),
+    },
+  });
 
   return {
     title: 'Simulation report',
-    sections: [
-      {
-        title: 'Summary',
-        rows: {
-          symbol,
-          timeframe,
-          initial_balance: formatNumber(report.initialBalance),
-          final_balance: formatNumber(report.finalBalance),
-          pnl: formatNumber(report.pnl),
-          pnl_percent: report.pnlPercent.toFixed(2),
-          trades: report.trades,
-          liquidations: report.liquidations,
-          fees_paid: formatNumber(report.feesPaid),
-        },
-      },
-      {
-        title: 'Performance metrics',
-        rows: {
-          max_drawdown_percent: formatPercent(performance.maxDrawdown),
-          win_rate_percent: formatPercent(performance.winRate),
-          avg_win: formatNumber(performance.avgWin, 4),
-          avg_loss: formatNumber(performance.avgLoss, 4),
-          profit_factor: formatRatio(performance.profitFactor),
-          expectancy: formatNumber(performance.expectancy, 4),
-        },
-      },
-      {
-        title: 'Top no-trade reasons',
-        rows: {
-          reasons: report.noTradeReasons.map((entry) => `${entry.reason} (${entry.count})`).join('\n'),
-        },
-      },
-      {
-        title: 'Trade log',
-        rows: {
-          entries: report.log.length,
-          log: report.log.join('\n'),
-        },
-      },
-    ],
+    sections,
   };
 }
 
@@ -2217,8 +2250,9 @@ Examples:
   .option('--history-window <number>', 'History window for indicators', '100')
   .option('--aggressiveness <number>', 'Trade aggressiveness multiplier (0.5-2.0)', '1')
   .option('--strategy <type>', 'Strategy mode: trend|mean|auto', 'auto')
-  .option('--min-confidence <number>', 'Minimum signal confidence (0..1)', '0.45')
-  .option('--cooldown-bars <number>', 'Cooldown bars between trades', '3')
+  .option('--strict', 'Use strict signal thresholds')
+  .option('--min-confidence <number>', 'Minimum signal confidence (0..1)')
+  .option('--cooldown-bars <number>', 'Cooldown bars between trades')
   .option('--log-no-trade', 'Log sampled no-trade reasons', false)
   .option('--report <path>', 'External performance report (CSV/TSV/Excel) to adjust risk')
   .option('--save-chart', 'Save PNG and ASCII chart for the simulation')
@@ -2228,6 +2262,15 @@ Examples:
   .option('--no-llm', 'Disable LLM post-run analysis')
   .action(async (options) => {
     const outputFormat = readOutputFormat(options);
+    const strictMode = readBooleanOption(options, 'strict') ?? false;
+    const minConfidence = parseNumber(
+      readStringOption(options, 'minConfidence'),
+      strictMode ? 0.45 : 0.35
+    );
+    const cooldownBars = parseNumber(
+      readStringOption(options, 'cooldownBars'),
+      strictMode ? 3 : 1
+    );
 
     const reportSummary = options.report ? await parseReport(options.report) : undefined;
 
@@ -2257,6 +2300,14 @@ Examples:
       ? new OpenAILlmClient()
       : undefined;
 
+    const strategy =
+      readStringOption(options, 'strategy') === 'trend'
+        ? 'trend'
+        : readStringOption(options, 'strategy') === 'mean'
+        ? 'mean'
+        : 'auto';
+    const aggressiveness = parseFloat(options.aggressiveness);
+
     const bot = new TradeBot(
       {
         symbol: options.symbol,
@@ -2265,14 +2316,10 @@ Examples:
         maxLeverage: parseFloat(options.maxLeverage),
         mmr: parseFloat(options.mmr),
         historyWindow: parseInt(options.historyWindow),
-        aggressiveness: parseFloat(options.aggressiveness),
-        strategy: readStringOption(options, 'strategy') === 'trend'
-          ? 'trend'
-          : readStringOption(options, 'strategy') === 'mean'
-          ? 'mean'
-          : 'auto',
-        minConfidence: parseFloat(options.minConfidence),
-        cooldownBars: parseInt(options.cooldownBars),
+        aggressiveness,
+        strategy,
+        minConfidence,
+        cooldownBars,
         logNoTrade: readBooleanOption(options, 'logNoTrade') ?? false,
         reportSummary,
       },
@@ -2284,7 +2331,12 @@ Examples:
     renderReportWithSave(
       'trade-sim',
       outputFormat,
-      buildSimulationReportPayload(options.symbol, options.timeframe, report),
+      buildSimulationReportPayload(options.symbol, options.timeframe, report, {
+        minConfidence,
+        cooldownBars,
+        strategy,
+        aggressiveness,
+      }),
       options,
       options.symbol
     );
