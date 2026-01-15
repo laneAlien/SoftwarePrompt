@@ -97,3 +97,16 @@ export async function fetchFullOHLCV(
 export function clearOhlcvCache() {
   ohlcvCache.clear();
 }
+
+export function disableCurrencyFetch(exchange: Exchange, exchangeId?: string): void {
+  const resolvedId = (exchangeId ?? exchange.id ?? '').toLowerCase();
+  if (resolvedId !== 'gate' && resolvedId !== 'kucoin') {
+    return;
+  }
+  if (!exchange.has) {
+    exchange.has = {};
+  }
+  exchange.has.fetchCurrencies = false;
+  exchange.options = exchange.options ?? {};
+  exchange.options.fetchCurrencies = false;
+}

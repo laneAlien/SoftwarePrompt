@@ -23,7 +23,7 @@ import { parseReport } from './reports/reportParser';
 import { exportReport } from './reports/reportGenerator';
 import { validateEnv } from './utils/env';
 import { fetchFundingRate } from './indicators/fundingRate';
-import { createExchangeOptions } from './real/exchangeUtils';
+import { createExchangeOptions, disableCurrencyFetch } from './real/exchangeUtils';
 import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
 import { AppConfig, FeeDefaults, OhlcvSource, loadConfig, resolveConfigPath } from './core/config';
@@ -317,11 +317,13 @@ function createCcxtExchange(exchangeId: string, options: Record<string, unknown>
   if (!ExchangeCtor) {
     throw new Error(`Unsupported exchange: ${exchangeId}`);
   }
-  return new ExchangeCtor(
+  const exchange = new ExchangeCtor(
     createExchangeOptions({
       enableRateLimit: resolveRateLimit(options),
     })
   );
+  disableCurrencyFetch(exchange, exchangeId);
+  return exchange;
 }
 
 function resolveConfigInfo(options: Record<string, unknown>): {
