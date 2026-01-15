@@ -2,7 +2,7 @@ import ccxt, { Exchange, OHLCV as RawOHLCV } from 'ccxt';
 import fs from 'fs';
 import path from 'path';
 import { OHLCV } from './ohlcv';
-import { createExchangeOptions, withRetry } from './exchangeUtils';
+import { createExchangeOptions, disableCurrencyFetch, withRetry } from './exchangeUtils';
 
 export type OhlcvSource = 'cache' | 'exchange' | 'auto';
 
@@ -275,17 +275,20 @@ function ensureCacheCoverage(
 
 function resolveExchange(exchangeInput: Exchange | string, rateLimit?: boolean): Exchange {
   if (typeof exchangeInput !== 'string') {
+    disableCurrencyFetch(exchangeInput);
     return exchangeInput;
   }
   const ExchangeCtor = (ccxt as any)[exchangeInput];
   if (!ExchangeCtor) {
     throw new Error(`Unsupported exchange: ${exchangeInput}`);
   }
-  return new ExchangeCtor(
+  const exchange = new ExchangeCtor(
     createExchangeOptions({
       enableRateLimit: rateLimit ?? true,
     })
   );
+  disableCurrencyFetch(exchange, exchangeInput);
+  return exchange;
 }
 
 function formatCoverage(start?: number, end?: number): string {
