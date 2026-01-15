@@ -20,6 +20,8 @@ export class KucoinClient implements ExchangeClient {
         enableRateLimit: options.enableRateLimit,
       })
     );
+    (this.exchange as any).has = { ...(this.exchange as any).has, fetchCurrencies: false };
+    (this.exchange as any).options = { ...(this.exchange as any).options, fetchCurrencies: false };
   }
 
   async fetchCandles(
