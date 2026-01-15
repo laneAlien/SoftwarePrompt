@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "tsx src/cli.ts",
     "dev": "tsx src/index.ts",
+    "smoke": "tsx src/scripts/smoke.ts",
     "test": "jest --passWithNoTests",
     "test:watch": "jest --watch"
   },
