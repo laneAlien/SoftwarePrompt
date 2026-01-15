@@ -1,8 +1,6 @@
-import { Candle, IndicatorSet } from '../core/types';
+import { Candle } from '../core/types';
 import { MarketRegime } from '../core/regime';
-import { ema } from '../indicators/ema';
-import { rsi } from '../indicators/rsi';
-import { bollinger } from '../indicators/bollinger';
+import { TaFeatures } from '../ta/features';
 
 export type SignalAction = 'BUY' | 'SELL' | 'HOLD';
 
@@ -15,7 +13,7 @@ export interface SignalResult {
 }
 
 export interface SignalFeatures {
-  indicators?: IndicatorSet;
+  ta: TaFeatures;
   regime?: MarketRegime;
 }
 
@@ -32,28 +30,10 @@ export interface SignalConfig {
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 
-const average = (values: number[]): number =>
-  values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length;
-
-const calculateAtr = (candles: Candle[], length = 14): number => {
-  if (candles.length < 2) return 0;
-  const start = Math.max(1, candles.length - length);
-  const ranges: number[] = [];
-  for (let i = start; i < candles.length; i += 1) {
-    const current = candles[i];
-    const previous = candles[i - 1];
-    const highLow = current.high - current.low;
-    const highClose = Math.abs(current.high - previous.close);
-    const lowClose = Math.abs(current.low - previous.close);
-    ranges.push(Math.max(highLow, highClose, lowClose));
-  }
-  return average(ranges);
-};
-
 const buildTrendSignal = (
   candles: Candle[],
   config: SignalConfig,
-  indicators?: IndicatorSet
+  ta: TaFeatures
 ): SignalResult => {
   const fastPeriod = config.trendFastPeriod ?? 50;
   const slowPeriod = config.trendSlowPeriod ?? 200;
@@ -69,20 +49,18 @@ const buildTrendSignal = (
     };
   }
 
-  const emaFastSeries = ema(closePrices, fastPeriod);
-  const emaSlowSeries = ema(closePrices, slowPeriod);
-  const emaFastValue = emaFastSeries[lastIndex] ?? indicators?.emaFast ?? closePrices[lastIndex];
-  const emaSlowValue = emaSlowSeries[lastIndex] ?? indicators?.emaSlow ?? closePrices[lastIndex];
+  const emaFastValue = ta.ema50 ?? closePrices[lastIndex];
+  const emaSlowValue = ta.ema200 ?? closePrices[lastIndex];
 
   const slopeIndex = Math.max(0, lastIndex - slopeWindow);
-  const slopeStart = emaFastSeries[slopeIndex] ?? emaFastValue;
+  const slopeStart = closePrices[slopeIndex] ?? emaFastValue;
   const slope = (emaFastValue - slopeStart) / Math.max(1, lastIndex - slopeIndex);
   const slopePct = emaFastValue !== 0 ? slope / emaFastValue : 0;
   const spreadPct = emaSlowValue !== 0 ? (emaFastValue - emaSlowValue) / emaSlowValue : 0;
 
   const trendStrength = Math.abs(spreadPct) + Math.abs(slopePct) * 3;
   const confidence = clamp(0.35 + trendStrength * 40, 0.2, 0.95);
-  const atr = calculateAtr(candles);
+  const atr = ta.atr14;
   const latestPrice = closePrices[lastIndex];
 
   if (emaFastValue > emaSlowValue && slope > 0) {
@@ -115,11 +93,10 @@ const buildTrendSignal = (
 const buildMeanRevertSignal = (
   candles: Candle[],
   config: SignalConfig,
-  indicators?: IndicatorSet
+  ta: TaFeatures
 ): SignalResult => {
   const rsiPeriod = config.meanRsiPeriod ?? 14;
   const bollingerPeriod = config.meanBollingerPeriod ?? 20;
-  const bollingerStdDev = config.meanBollingerStdDev ?? 2;
   const closePrices = candles.map((candle) => candle.close);
   const lastIndex = closePrices.length - 1;
 
@@ -131,16 +108,14 @@ const buildMeanRevertSignal = (
     };
   }
 
-  const rsiSeries = rsi(closePrices, rsiPeriod);
-  const rsiValue = indicators?.rsi ?? rsiSeries[lastIndex];
-  const bollingerValues = bollinger(closePrices, bollingerPeriod, bollingerStdDev);
-  const bollingerSet = indicators?.bollinger ?? {
-    upper: bollingerValues.upper[lastIndex],
-    middle: bollingerValues.middle[lastIndex],
-    lower: bollingerValues.lower[lastIndex],
+  const rsiValue = ta.rsi14;
+  const bollingerSet = {
+    upper: ta.bbUpper,
+    middle: ta.bbMid,
+    lower: ta.bbLower,
   };
 
-  if (!bollingerSet || Number.isNaN(rsiValue)) {
+  if (Number.isNaN(rsiValue)) {
     return {
       action: 'HOLD',
       confidence: 0.2,
@@ -150,7 +125,7 @@ const buildMeanRevertSignal = (
 
   const latestPrice = closePrices[lastIndex];
   const bandWidth = bollingerSet.upper - bollingerSet.lower;
-  const atr = calculateAtr(candles);
+  const atr = ta.atr14;
 
   if (latestPrice <= bollingerSet.lower && rsiValue <= 40) {
     const distanceScore = bandWidth > 0 ? (bollingerSet.lower - latestPrice) / bandWidth : 0;
@@ -199,8 +174,8 @@ export function generateSignal(
       : config.strategy;
 
   if (chosen === 'mean') {
-    return buildMeanRevertSignal(candles, config, features.indicators);
+    return buildMeanRevertSignal(candles, config, features.ta);
   }
 
-  return buildTrendSignal(candles, config, features.indicators);
+  return buildTrendSignal(candles, config, features.ta);
 }
