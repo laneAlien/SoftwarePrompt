@@ -28,6 +28,7 @@ import { GridResult, runGridBacktest } from './strategies/gridEngine';
 import { backtestTrailingGrid } from './strategies/trailingGrid';
 import { AppConfig, FeeDefaults, OhlcvSource, loadConfig, resolveConfigPath } from './core/config';
 import { sma } from './indicators/sma';
+import { buildPerformanceMetrics } from './backtest/metrics';
 import {
   renderAsciiChart,
   renderAsciiChartSeries,
@@ -207,6 +208,12 @@ function buildStatusReport(message: string): ReportPayload {
 }
 
 function buildSimulationReportPayload(symbol: string, timeframe: string, report: SimulationReport): ReportPayload {
+  const performance = buildPerformanceMetrics(report.equityCurve);
+  const formatPercent = (value: number) => (value * 100).toFixed(2);
+  const formatNumber = (value: number, decimals = 2) => value.toFixed(decimals);
+  const formatRatio = (value: number, decimals = 4) =>
+    Number.isFinite(value) ? value.toFixed(decimals) : value > 0 ? '∞' : 'n/a';
+
   return {
     title: 'Simulation report',
     sections: [
@@ -215,15 +222,24 @@ function buildSimulationReportPayload(symbol: string, timeframe: string, report:
         rows: {
           symbol,
           timeframe,
-          initial_balance: report.initialBalance.toFixed(2),
-          final_balance: report.finalBalance.toFixed(2),
-          pnl: report.pnl.toFixed(2),
+          initial_balance: formatNumber(report.initialBalance),
+          final_balance: formatNumber(report.finalBalance),
+          pnl: formatNumber(report.pnl),
           pnl_percent: report.pnlPercent.toFixed(2),
           trades: report.trades,
-          win_rate_percent: report.winRatePercent.toFixed(2),
           liquidations: report.liquidations,
-          max_drawdown_percent: report.maxDrawdownPercent.toFixed(2),
-          fees_paid: report.feesPaid.toFixed(2),
+          fees_paid: formatNumber(report.feesPaid),
+        },
+      },
+      {
+        title: 'Performance metrics',
+        rows: {
+          max_drawdown_percent: formatPercent(performance.maxDrawdown),
+          win_rate_percent: formatPercent(performance.winRate),
+          avg_win: formatNumber(performance.avgWin, 4),
+          avg_loss: formatNumber(performance.avgLoss, 4),
+          profit_factor: formatRatio(performance.profitFactor),
+          expectancy: formatNumber(performance.expectancy, 4),
         },
       },
       {
@@ -829,14 +845,34 @@ async function resolveGtFeeQuoteResolver(
   };
 }
 
-function buildGridMetricsRows(result: GridResult): Record<string, ReportValue> {
+function buildPerformanceMetricsRows(equityCurve: number[]): Record<string, ReportValue> {
+  const performance = buildPerformanceMetrics(equityCurve);
+  const formatPercent = (value: number) => (value * 100).toFixed(2);
+  const formatNumber = (value: number, decimals = 4) => value.toFixed(decimals);
+  const formatRatio = (value: number, decimals = 4) =>
+    Number.isFinite(value) ? value.toFixed(decimals) : value > 0 ? '∞' : 'n/a';
+
   return {
-    pnl: result.pnlNet.toFixed(4),
-    maxDD: result.maxDD.toFixed(4),
+    max_drawdown_percent: formatPercent(performance.maxDrawdown),
+    win_rate_percent: formatPercent(performance.winRate),
+    avg_win: formatNumber(performance.avgWin),
+    avg_loss: formatNumber(performance.avgLoss),
+    profit_factor: formatRatio(performance.profitFactor),
+    expectancy: formatNumber(performance.expectancy),
+  };
+}
+
+function buildGridExecutionMetricsRows(result: GridResult): Record<string, ReportValue> {
+  const formatNumber = (value: number, decimals = 4) => value.toFixed(decimals);
+  const formatRatio = (value: number, decimals = 4) =>
+    Number.isFinite(value) ? value.toFixed(decimals) : value > 0 ? '∞' : 'n/a';
+
+  return {
+    pnl: formatNumber(result.pnlNet),
     trades: result.tradesCount,
-    turnover: result.turnover.toFixed(4),
-    fees: result.feesTotal.toFixed(4),
-    fee_ratio: result.feeRatio.toFixed(6),
+    turnover: formatNumber(result.turnover),
+    fees: formatNumber(result.feesTotal),
+    fee_ratio: formatRatio(result.feeRatio, 6),
   };
 }
 
@@ -1346,6 +1382,11 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
             stopOnLowCloses,
           })
         : runGridBacktest(commonOptions);
+    const finalEquity =
+      gridResult.equityCurve.length > 0
+        ? gridResult.equityCurve[gridResult.equityCurve.length - 1]
+        : allocation + gridResult.pnlNet;
+    const pnlPercent = allocation > 0 ? (gridResult.pnlNet / allocation) * 100 : 0;
     const report = {
       title: 'Grid backtest report',
       sections: [
@@ -1379,12 +1420,29 @@ async function handleBacktestGrid(options: Record<string, unknown>): Promise<voi
           }),
         },
         {
+          title: 'Summary',
+          rows: {
+            symbol,
+            timeframe,
+            since,
+            until: until ?? 'latest',
+            allocation: allocation.toFixed(2),
+            final_equity: finalEquity.toFixed(2),
+            pnl: gridResult.pnlNet.toFixed(4),
+            pnl_percent: pnlPercent.toFixed(2),
+          },
+        },
+        {
           title: 'Fees',
           rows: buildFeeSummaryRows(feeModel, feeInputs),
         },
         {
-          title: 'Grid backtest metrics',
-          rows: buildGridMetricsRows(gridResult),
+          title: 'Performance metrics',
+          rows: buildPerformanceMetricsRows(gridResult.equityCurve),
+        },
+        {
+          title: 'Execution metrics',
+          rows: buildGridExecutionMetricsRows(gridResult),
         },
       ],
     };
@@ -2746,8 +2804,12 @@ Examples:
             rows: buildFeeSummaryRows(feeModel, feeInputs),
           },
           {
-            title: 'Grid backtest metrics',
-            rows: buildGridMetricsRows(gridResult),
+            title: 'Performance metrics',
+            rows: buildPerformanceMetricsRows(gridResult.equityCurve),
+          },
+          {
+            title: 'Execution metrics',
+            rows: buildGridExecutionMetricsRows(gridResult),
           },
           {
             title: 'PnL delta',
