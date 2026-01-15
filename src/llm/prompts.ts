@@ -46,6 +46,12 @@ Focus on:
 - Risk factors from news
 Do not make trading recommendations based solely on news.`;
 
+export const NEWS_BRIEF_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}
+
+You provide a concise, structured briefing on crypto news.
+Return short risk flags and what to watch next.
+Do not provide trading advice or direct buy/sell instructions.`;
+
 export const SIMULATION_ANALYSIS_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}
 
 You analyze simulation results of AI trading bot.

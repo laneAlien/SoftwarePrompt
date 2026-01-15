@@ -18,7 +18,7 @@ import { analyzePortfolio } from './real/portfolioAnalyzer';
 import { computeIndicators } from './indicators';
 import { runAllStrategies, combineSignals } from './strategies';
 import { OpenAILlmClient } from './llm/llmClient';
-import { aggregateNews } from './news/aggregator';
+import { analyzeNews } from './news/analyzeNews';
 import { parseReport } from './reports/reportParser';
 import { exportReport } from './reports/reportGenerator';
 import { validateEnv } from './utils/env';
@@ -2092,15 +2092,21 @@ Examples:
   .option('--symbol <string>', 'Filter by symbol')
   .option('--output <format>', 'Output format: text|json|md', 'text')
   .option('--save-report', 'Save report to file')
+  .option('--config <path>', 'Config path')
+  .option('--no-llm', 'Disable LLM summary')
   .action(async (options) => {
     const outputFormat = readOutputFormat(options);
 
     try {
-      const news = await aggregateNews(options.symbol);
+      const result = await analyzeNews({
+        symbol: options.symbol,
+        configPath: options.config,
+        useLlm: options.llm,
+      });
+      const news = result.items;
 
       const items = news.map((item) => {
-        const link = item.rawLink ?? 'n/a';
-        return `${item.title} (sentiment: ${item.sentiment}, source: ${item.source}, link: ${link})`;
+        return `${item.title} (source: ${item.source})\n${item.url}\n${item.summary}`;
       });
       const report: ReportPayload = {
         title: 'News analysis report',
@@ -2121,23 +2127,13 @@ Examples:
         ],
       };
 
-      let llmSummary: { summary: string; scenarios: string[] } | null = null;
-      if (process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY) {
-        const llm = new OpenAILlmClient();
-        llmSummary = await llm.analyze(
-          {
-            news,
-            symbol: options.symbol,
-          } as any,
-          'news'
-        );
-      }
-      if (llmSummary) {
+      if (result.llmSummary) {
         report.sections.push({
           title: 'LLM analysis',
           rows: {
-            summary: llmSummary.summary,
-            scenarios: llmSummary.scenarios.join('; '),
+            summary: result.llmSummary.summary,
+            risk_flags: result.llmSummary.riskFlags.join('; '),
+            watch: result.llmSummary.watch.join('; '),
           },
         });
       }

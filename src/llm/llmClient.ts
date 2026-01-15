@@ -1,10 +1,12 @@
 import OpenAI from 'openai';
 import { LlmClient, LlmAnalysisInput, LlmAnalysisOutput, LlmMode } from '../core/types';
+import { NewsItem } from '../news/types';
 import { 
   BASE_SYSTEM_PROMPT,
   PAIR_ANALYSIS_SYSTEM_PROMPT,
   POSITION_ANALYSIS_SYSTEM_PROMPT,
   PORTFOLIO_ANALYSIS_SYSTEM_PROMPT,
+  NEWS_BRIEF_SYSTEM_PROMPT,
   NEWS_ANALYSIS_SYSTEM_PROMPT,
   SIMULATION_ANALYSIS_SYSTEM_PROMPT,
   buildUserPromptForMode 
@@ -63,6 +65,22 @@ export class OpenAILlmClient implements LlmClient {
     }
   }
 
+  async analyzeNewsBrief(items: NewsItem[]): Promise<{ summary: string; riskFlags: string[]; watch: string[] }> {
+    const prompt = this.buildNewsBriefPrompt(items);
+    const response = await this.openai.chat.completions.create({
+      model: this.model,
+      messages: [
+        { role: 'system', content: NEWS_BRIEF_SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.5,
+      max_tokens: 500,
+    });
+
+    const content = response.choices[0]?.message?.content || '';
+    return this.parseNewsBrief(content);
+  }
+
   private getSystemPromptForMode(mode: LlmMode): string {
     switch (mode) {
       case 'pair':
@@ -78,6 +96,52 @@ export class OpenAILlmClient implements LlmClient {
       default:
         return BASE_SYSTEM_PROMPT;
     }
+  }
+
+  private buildNewsBriefPrompt(items: NewsItem[]): string {
+    const lines = ['Summarize the following news items:'];
+    for (const item of items.slice(0, 20)) {
+      lines.push(`- ${item.title} (${item.source})`);
+      lines.push(`  ${item.summary}`);
+    }
+    lines.push(
+      '\nReturn JSON with fields: summary (string), riskFlags (array of short bullet phrases), watch (array of short bullet phrases). Keep it concise.'
+    );
+    return lines.join('\n');
+  }
+
+  private parseNewsBrief(content: string): { summary: string; riskFlags: string[]; watch: string[] } {
+    const parsed = this.safeParseJson(content);
+    if (parsed) {
+      return {
+        summary: typeof parsed.summary === 'string' ? parsed.summary : content.trim(),
+        riskFlags: Array.isArray(parsed.riskFlags) ? parsed.riskFlags.filter((item) => typeof item === 'string') : [],
+        watch: Array.isArray(parsed.watch) ? parsed.watch.filter((item) => typeof item === 'string') : [],
+      };
+    }
+    return {
+      summary: content.trim(),
+      riskFlags: [],
+      watch: [],
+    };
+  }
+
+  private safeParseJson(content: string): Record<string, unknown> | null {
+    try {
+      const trimmed = content.trim();
+      if (trimmed.startsWith('{')) {
+        return JSON.parse(trimmed) as Record<string, unknown>;
+      }
+      const start = trimmed.indexOf('{');
+      const end = trimmed.lastIndexOf('}');
+      if (start !== -1 && end !== -1 && end > start) {
+        const snippet = trimmed.slice(start, end + 1);
+        return JSON.parse(snippet) as Record<string, unknown>;
+      }
+    } catch (error) {
+      return null;
+    }
+    return null;
   }
 
   private parseResponse(content: string): LlmAnalysisOutput {
