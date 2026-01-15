@@ -16,7 +16,17 @@ export function isRetryableError(error: unknown): boolean {
   const err = error as { name?: string; message?: string };
   const message = `${err.name ?? ''} ${err.message ?? ''}`.toLowerCase();
 
-  const retryKeywords = ['timeout', 'network', 'ddos', 'rate limit', 'connection', 'fetch'];
+  const retryKeywords = [
+    'timeout',
+    'request timeout',
+    'requesttimeout',
+    'network',
+    'ddos',
+    'rate limit',
+    'ratelimit',
+    'connection',
+    'fetch',
+  ];
   return retryKeywords.some((keyword) => message.includes(keyword));
 }
 
@@ -45,8 +55,10 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       }
 
       onRetry?.(attempt, error);
-      const delayMultiplier = rateLimited ? 2 : 1;
-      await delay(delayMs * attempt * delayMultiplier);
+      const backoffMs = delayMs * Math.pow(2, attempt - 1);
+      const jitterMs = Math.random() * delayMs;
+      const rateLimitMultiplier = rateLimited ? 2 : 1;
+      await delay((backoffMs + jitterMs) * rateLimitMultiplier);
     }
   }
 }
