@@ -8,6 +8,7 @@ export interface SimulationReport {
   liquidations: number;
   maxDrawdownPercent: number;
   feesPaid: number;
+  equityCurve: number[];
   noTradeReasons: Array<{ reason: string; count: number }>;
   log: string[];
 }
@@ -20,6 +21,7 @@ export function buildSimulationReport(
   liquidationsCount: number,
   maxDrawdownPercent: number,
   feesPaid: number,
+  equityCurve: number[],
   noTradeReasons: Array<{ reason: string; count: number }>,
   log: string[]
 ): SimulationReport {
@@ -35,6 +37,7 @@ export function buildSimulationReport(
     liquidations: liquidationsCount,
     maxDrawdownPercent,
     feesPaid,
+    equityCurve,
     noTradeReasons,
     log,
   };

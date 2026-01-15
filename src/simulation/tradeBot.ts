@@ -54,6 +54,7 @@ export class TradeBot {
   private noTradeReasons = new Map<string, number>();
   private lastNoTradeReason = '';
   private noTradeLogEvery = 25;
+  private equityCurve: number[] = [];
 
   constructor(config: TradeBotConfig, simulator: MarketSimulator, execution: OrderExecutionEngine) {
     this.config = config;
@@ -132,6 +133,7 @@ export class TradeBot {
       this.liquidationsCount,
       this.maxDrawdownPercent,
       this.totalFeesPaid,
+      this.equityCurve,
       topNoTradeReasons,
       this.log
     );
@@ -318,6 +320,7 @@ export class TradeBot {
     this.liquidationsCount = liquidatedPositions.length;
 
     const equity = this.execution.getTotalEquity(currentPrice);
+    this.equityCurve.push(equity);
     if (equity > this.peakBalance) {
       this.peakBalance = equity;
     }
