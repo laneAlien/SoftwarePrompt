@@ -3,11 +3,12 @@ import { OrderExecutionEngine } from './orderExecution';
 import { SimulationReport, buildSimulationReport } from './reporter';
 import { computeIndicators } from '../indicators';
 import { detectRegime, MarketRegime } from '../core/regime';
-import { Candle, IndicatorSet, RiskLevel } from '../core/types';
+import { Candle, RiskLevel } from '../core/types';
 import { ReportSummary } from '../reports/reportParser';
 import { determineRiskLevel } from '../real/liquidationRisk';
 import { adjustAggressiveness, calculateMaxDrawdown, estimateVolatility } from '../real/riskManagement';
 import { generateSignal, SignalResult } from '../strategies/signals';
+import { computeFeatures } from '../ta/features';
 
 export interface TradeBotConfig {
   symbol: string;
@@ -76,8 +77,9 @@ export class TradeBot {
       this.execution.onPriceUpdate(marketState.currentPrice);
 
       const indicators = computeIndicators(marketState.recentCandles);
+      const taFeatures = computeFeatures(marketState.recentCandles);
       const regime = detectRegime(marketState.recentCandles).regime;
-      const signal = this.generateSignal(marketState.recentCandles, indicators, regime);
+      const signal = this.generateSignal(marketState.recentCandles, taFeatures, regime);
 
       const metrics = {
         maxDrawdownPercent: calculateMaxDrawdown(marketState.recentCandles),
@@ -182,8 +184,12 @@ export class TradeBot {
     return Math.min(this.config.maxLeverage, Math.max(1, baseLeverage));
   }
 
-  private generateSignal(candles: Candle[], indicators: IndicatorSet, regime: MarketRegime): SignalResult {
-    return generateSignal(candles, { indicators, regime }, { strategy: this.config.strategy });
+  private generateSignal(
+    candles: Candle[],
+    taFeatures: ReturnType<typeof computeFeatures>,
+    regime: MarketRegime
+  ): SignalResult {
+    return generateSignal(candles, { ta: taFeatures, regime }, { strategy: this.config.strategy });
   }
 
   private validateSignal(signal: SignalResult, riskLevel: RiskLevel, stepCount: number): RiskValidationResult {
