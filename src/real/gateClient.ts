@@ -72,10 +72,7 @@ export class GateClient implements ExchangeClient {
   async fetchBalance(): Promise<PortfolioAsset[]> {
     await this.ensureMarkets();
 
-    const balance = (await withRetry(() => this.exchange.fetchBalance(), {
-      onRetry: (attempt, error) =>
-        console.warn(`Gate.io fetchBalance retry ${attempt}/${3}:`, (error as Error).message || error),
-    })) as Balances;
+    const balance = (await this.exchange.fetchBalance()) as Balances;
     const assets: PortfolioAsset[] = [];
 
     for (const [currency, amount] of Object.entries(balance.total)) {
