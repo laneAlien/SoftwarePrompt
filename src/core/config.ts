@@ -28,11 +28,16 @@ export interface OutputDefaults {
   mode?: BacktestMode;
 }
 
+export interface NewsConfig {
+  rss?: string[];
+}
+
 export interface AppConfig {
   exchange?: string;
   symbols?: string[];
   fees?: FeeDefaults;
   output?: OutputDefaults;
+  news?: NewsConfig;
 }
 
 export interface ResolvedConfigPath {
@@ -101,6 +106,7 @@ function normalizeConfig(raw: unknown): AppConfig {
     symbols: toStringArray(raw.symbols),
     fees: normalizeFeeDefaults(raw.fees),
     output: normalizeOutputDefaults(raw.output),
+    news: isRecord(raw.news) ? { rss: toStringArray(raw.news.rss) } : undefined,
   };
 }
 
