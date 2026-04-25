@@ -42,3 +42,8 @@ output/
 
 # Replit
 .replit.nix
+
+# Analysis outputs
+report.json
+reports/
+data/
